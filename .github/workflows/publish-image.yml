@@ -1,0 +1,92 @@
+name: Publish public image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional write-once version, e.g. 0.3.0-candidate.20261012'
+        type: string
+        default: ''
+      confirm_release_tag:
+        description: 'Repeat release_tag to authorize creation; existing tags fail'
+        type: string
+        default: ''
+      expected_sha:
+        description: 'Full selected branch commit SHA; mandatory for release tag'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+# Unique run groups retain EVERY merge. The runner + shared flock serialize builds;
+# a shared GitHub concurrency group would silently cancel older pending merges.
+concurrency:
+  group: public-image-${{ github.repository }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Publication contract tests
+        run: python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
+
+  publish:
+    needs: validate
+    # No PR payload or noncanonical branch ever reaches the self-hosted worker.
+    if: >-
+      github.repository == 'humanitylabs-org/wizard-voice-service' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: [self-hosted, macOS, ARM64, wizard-ghcr-wizard-voice-service]
+    timeout-minutes: 100
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          clean: true
+      - name: Build and publish immutable multi-platform image
+        id: publish
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ghcr.io/humanitylabs-org/wizard-voice-service
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CONFIRM_TAG: ${{ inputs.confirm_release_tag }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: >-
+          python3 scripts/ci/ghcr_image.py publish
+          --image "$IMAGE" --sha "$GITHUB_SHA" --branch main
+          --release "$RELEASE_TAG" --confirm "$CONFIRM_TAG" --expected-sha "$EXPECTED_SHA"
+
+  anonymous-pull:
+    needs: publish
+    # Fresh hosted Linux VM: never logged into GHCR, no publisher's Docker state.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Pull digest and every tag for both architectures without credentials
+        env:
+          IMAGE: ghcr.io/humanitylabs-org/wizard-voice-service
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          python3 scripts/ci/ghcr_image.py verify
+          --image "$IMAGE" --sha "$GITHUB_SHA" --digest "$DIGEST" --release "$RELEASE_TAG"
