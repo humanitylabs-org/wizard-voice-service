@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wizard-voice-service"
-version = "0.2.1rc2"
+version = "0.2.2rc1"
 description = "Standalone transcription and local correction/styling service for Wizard OS"
 requires-python = ">=3.11"
 dependencies = [
@@ -19,14 +19,17 @@ dependencies = [
 
 [project.scripts]
 wizard-voice-rules = "voice_cli:main"
+wizard-voice-profile = "profile_cli:main"
 
 [project.optional-dependencies]
+parakeet = ["onnx-asr==0.12.0"]
 test = [
   "httpx==0.28.1",
   "pytest==9.0.3",
 ]
 
 [tool.setuptools]
+packages = ["voice_mcp"]
 py-modules = [
   "client",
   "config",
@@ -40,6 +43,8 @@ py-modules = [
   "speech_gate",
   "voice_rules",
   "voice_cli",
+  "profile_cli",
+  "parakeet_adapter",
 ]
 
 [tool.setuptools.data-files]

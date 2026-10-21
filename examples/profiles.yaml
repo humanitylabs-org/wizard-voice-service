@@ -1,0 +1,34 @@
+# Isolated trial config; never point a production broker here without approval.
+stt:
+  enabled: true
+  provider: tinfoil
+  active_profile: tinfoil
+  providers:
+    tinfoil:
+      model: voxtral-small-24b
+      realtime_model: voxtral-mini
+  profiles:
+    tinfoil:
+      provider: tinfoil
+      model: voxtral-small-24b
+      proxy_url: http://127.0.0.1:3301
+      secret_env: TINFOIL_API_KEY
+    current-vps-parakeet:
+      provider: parakeet
+      model: parakeet-tdt-0.6b-v3
+      base_url: http://127.0.0.1:18865
+      privacy: local-host
+      timeout: 180
+    mac-mini-parakeet:
+      provider: parakeet
+      model: parakeet-tdt-0.6b-v3
+      base_url: http://127.0.0.1:18866
+      privacy: private-remote
+      timeout: 180
+voice:
+  schema_version: 1
+  lanes:
+    realtime_stt:
+      enabled: false
+    conversation:
+      enabled: false

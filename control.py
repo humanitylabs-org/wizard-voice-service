@@ -55,8 +55,8 @@ def safe_voice_config(path: Path | str | None = None) -> dict[str, object]:
             "batch_stt": {
                 **_safe_lane(control.batch_stt),
                 "attested": batch_provider.attested,
-                "privacy": "attested-confidential" if batch_provider.attested else "provider-policy",
-                "credential": "configured" if _credential_present(batch_provider.api_key_env) else "missing",
+                "privacy": batch_provider.privacy if batch_provider.name == "parakeet" else ("attested-confidential" if batch_provider.attested else "provider-policy"),
+                "credential": "not-required" if batch_provider.name == "parakeet" else ("configured" if _credential_present(batch_provider.api_key_env) else "missing"),
                 "fallback": None,
             },
             "realtime_stt": _safe_lane(control.realtime_stt),
