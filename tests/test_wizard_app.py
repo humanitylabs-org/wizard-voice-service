@@ -1,6 +1,7 @@
 import copy
 from dataclasses import replace
 import json
+import re
 from pathlib import Path
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -157,7 +158,12 @@ def test_manifest_and_compose_packaging():
     compose = yaml.safe_load((ROOT / "runtipi/docker-compose.yml").read_text())
     service = compose["services"]["wizard-voice-service"]
     assert service["x-runtipi"]["add_to_main_network"] and service["read_only"]
-    assert service["pull_policy"] == "never" and service["user"] == "1000:1000"
+    assert "pull_policy" not in service and service["user"] == "1000:1000"
+    assert re.fullmatch(r"ghcr\.io/humanitylabs-org/wizard-voice-service@sha256:[0-9a-f]{64}", service["image"])
+    published = json.loads((ROOT / "qa/public-image.json").read_text())
+    assert service["image"] == published["image"] + "@" + published["index"]
+    assert set(published["platforms"]) == {"amd64", "arm64"}
+    assert published["anonymous"] and published["visibility"] == "public"
     assert service["environment"]["WIZARD_VOICE_RETAIN_FAILED_AUDIO"] == "0"
     assert service["volumes"][1].endswith(":/media:ro")
 

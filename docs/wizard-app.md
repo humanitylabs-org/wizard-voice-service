@@ -25,20 +25,27 @@ No ASR model is bundled in Voice. The small bundled ONNX file is a speech-presen
 gate, not a recognizer. Change the selected model to match Transcriber's installed
 model if the owner customizes it. No provider fallback exists.
 
-## Private install / release boundary
+## Immutable image / release boundary
 
-This recipe deliberately uses a **local, preloaded image** with `pull_policy:
-never`. The private org's Actions/GHCR publication route is unavailable. No public
-image is published, and no nonexistent registry digest is claimed. An installer
-can install this candidate after an authorized private checkout and image preload:
+The recipe pins `ghcr.io/humanitylabs-org/wizard-voice-service` by its immutable
+multi-platform index digest. The index contains linux/amd64 and linux/arm64 images
+built from the same main commit by the dedicated repository-scoped macOS worker.
+No moving `latest` tag or preloaded local image is required.
 
-```sh
-# Run on the target build machine, from this reviewed checkout (not the live service).
-docker buildx build --platform linux/arm64 --load \
-  --build-arg VCS_REF="$(git rev-parse HEAD)" -t wizard-voice-service:0.2.2-rc1.app1 .
-# For another box of the same arch: docker save | private transfer | docker load.
-# Install Transcriber first, then install this recipe via App Manager.
-```
+**Public verification:** [publication run 39659639855](https://github.com/humanitylabs-org/wizard-voice-service/actions/runs/39659639855)
+built main commit `510bc89f507f02fd3fd41b64605918b2a1825a82` and its independent
+hosted anonymous-pull job passed for both platforms by digest and full-SHA tag,
+checking the source revision. The compose pin is that verified index digest.
+Future release candidates must pass the same check before recipe promotion.
+If a future package is private, an organization administrator must first set it
+to Public. The package settings are
+https://github.com/orgs/humanitylabs-org/packages/container/wizard-voice-service/settings.
+After changing visibility, rerun failed verification jobs only (do not rebuild or
+retag the immutable image). See `scripts/ci/README.md` for publication details.
+
+Install Transcriber first, then install this recipe through App Manager. The
+public-image gate does not replace the separate catalog/dependency admission
+requirements above.
 
 The Runtipi compose's `add_to_main_network` attaches Voice to the shared app
 network where `transcriber:8000` is reachable. Port 8803 is loopback-only on the
@@ -51,10 +58,9 @@ never overwrites owner configuration. Jobs live in `/data/jobs`; failed-upload
 retention is off. Rules/corrections are absent unless the owner creates them.
 Use only one service process per data directory.
 
-This is installable with an image preload, **not yet a zero-touch fleet/default
-release**. Private artifact distribution (or repaired private registry auth),
-index/catalog admission, and the explicit box default-install change are follow-up
-gates. Do not edit the existing transcription slot to point at Voice.
+Public image pulls are one gate, **not a zero-touch fleet/default release**.
+Index/catalog admission and the explicit box default-install change remain
+follow-up gates. Do not edit the existing transcription slot to point at Voice.
 
 ## Optional Tinfoil router contract (not implemented in Connection Router)
 
@@ -111,7 +117,9 @@ words as dictation. `/health` validates config, not engine readiness.
 
 Run `python3 qa/wizard_app_acceptance.py --evidence /absolute/evidence/path` on a
 macOS build worker with Docker/buildx, Python 3, macOS `say` and `afconvert`.
-It builds ARM64 and tries AMD64, runs the full suite and installed-package smoke
+It overrides only its isolated project to use a locally built image with
+`pull_policy: never`; this is source-build acceptance, not anonymous publication
+proof. It builds ARM64 and tries AMD64, runs the full suite and installed-package smoke
 inside the ARM64 image, fetches Transcriber's pinned public recipe, starts its
 unmodified main+engine plus Voice on an isolated compose network, generates only
 synthetic TTS audio and exercises dictation, meeting, MCP listing/call/status,

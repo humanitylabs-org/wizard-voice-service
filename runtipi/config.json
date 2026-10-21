@@ -9,7 +9,7 @@
   "categories": [
     "utilities"
   ],
-  "description": "Dictation layer over the installed Transcriber speech engine. No bundled speech model or personal rules. Private candidate requires preloaded image; see docs/wizard-app.md.",
+  "description": "Dictation layer over the installed Transcriber speech engine. No bundled speech model or personal rules. Immutable multi-arch GHCR image; see docs/wizard-app.md for publication and rollout gates.",
   "tipi_version": 1,
   "version": "0.2.2-rc1.app1",
   "source": "https://github.com/humanitylabs-org/wizard-voice-service",

@@ -1,12 +1,11 @@
-# Private candidate: build/preload this image on the box before installation.
-# No public registry publication is implied. See docs/wizard-app.md.
+# Multi-arch image built from main 510bc89f507f02fd3fd41b64605918b2a1825a82.
+# Anonymous digest + full-SHA tag pulls verified for both architectures.
 x-runtipi:
   schema_version: 2
   overrides: []
 services:
   wizard-voice-service:
-    image: wizard-voice-service:0.2.2-rc1.app1
-    pull_policy: never
+    image: ghcr.io/humanitylabs-org/wizard-voice-service@sha256:a279274949c03bd8fe244f083f727e41f51d7040e58a48288089621f5ab27e89
     user: "1000:1000"
     read_only: true
     cap_drop: [ALL]

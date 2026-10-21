@@ -67,9 +67,9 @@ python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
 
 Unit tests exercise guards, collision refusal and credential-free pull commands;
 only an actual protected-branch Actions run proves the build and public install
-contract. The existing Tests workflow remains unchanged. Before the first public
-voice image exists, verifier PR smoke pulls a documented immutable public sibling
-image; dispatch and post-publication verification target voice itself.
+contract. The existing Tests workflow remains unchanged. PR verifier smoke now
+pulls the first verified public voice image itself; dispatch can verify any exact
+voice digest and source revision.
 
 Publication code is adapted from `humanitylabs-org/wizard-agent-service`
 (`scripts/ci/ghcr_image.py`, `test_ghcr_image.py` and publication workflows);
