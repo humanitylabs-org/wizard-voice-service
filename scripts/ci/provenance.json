@@ -1,0 +1,33 @@
+{
+  "repository": "https://github.com/humanitylabs-org/wizard-agent-service",
+  "revision": "5bb874b6b67b1747142fac14e6729b0ea5a66cec",
+  "license": "MIT; Copyright (c) 2026 Humanity Labs (see root LICENSE)",
+  "files": [
+    {
+      "upstream_path": "scripts/ci/README.md",
+      "destination_path": "scripts/ci/README.md",
+      "sha256": "c730b963d998ffb45fc0b90cb48fdfd96c883f7ca7866943c14dc79980a248f5"
+    },
+    {
+      "upstream_path": "scripts/ci/ghcr_image.py",
+      "destination_path": "scripts/ci/ghcr_image.py",
+      "sha256": "ec5842f004a59e9c3cc9656391467a37cb31f839d536dbb2d844b559dc0e0e44"
+    },
+    {
+      "upstream_path": "scripts/ci/test_ghcr_image.py",
+      "destination_path": "scripts/ci/test_ghcr_image.py",
+      "sha256": "bfff7217e502886960b958a75047c1579a1395151a00a66ddfe5194e96880699"
+    },
+    {
+      "upstream_path": ".github/workflows/publish-image.yml",
+      "destination_path": ".github/workflows/publish-image.yml",
+      "sha256": "768c469ae9bc1920bcbe67871fb30521a0a03d7d60993dd0e7e253d41f3f8a35"
+    },
+    {
+      "upstream_path": ".github/workflows/verify-public-image.yml",
+      "destination_path": ".github/workflows/verify-public-image.yml",
+      "sha256": "69cd4ad74594232d7c1a90a48c6ddf6c23bf009ed9c7f68e26a4be0fd7b4b7c5"
+    }
+  ],
+  "adaptation": "Voice repository/main guards and labels; public sibling bootstrap verification fixture."
+}
