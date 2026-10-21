@@ -27,7 +27,9 @@ async def lifespan(_app: FastAPI):
         _stop_jobs()
 
 
-app = FastAPI(title="Wizard Voice Service", version="0.2.1rc2", docs_url=None, redoc_url=None, lifespan=lifespan)
+app = FastAPI(title="Wizard Voice Service", version="0.2.2rc1", docs_url=None, redoc_url=None, lifespan=lifespan)
+from voice_mcp.front import router as mcp_router
+app.include_router(mcp_router)
 app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=[
@@ -80,6 +82,8 @@ def health() -> dict[str, object]:
         "provider": selected.name,
         "model": selected.model,
         "attested": selected.attested,
+        "profile": selected.profile,
+        "privacy": selected.privacy,
         "fallback": None,
     }
 

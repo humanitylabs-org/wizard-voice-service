@@ -15,7 +15,7 @@ from typing import Callable, Sequence
 
 from dotenv import dotenv_values
 
-from config import ProviderConfig, ProviderConfigurationError, load_provider_config
+from config import ProviderConfig, ProviderConfigurationError, is_local_transcriber, load_provider_config
 from postprocess import apply_transcription_postprocess
 from stt_refusal import _APOLOGY_ONLY, _PATTERN, _SORRY, REFUSAL_CODE, is_assistant_refusal
 from speech_gate import SpeechGateError, detect_no_speech
@@ -64,6 +64,17 @@ class ProviderError(RuntimeError):
 
 class NoSpeechError(ProviderError):
     """The local acoustic gate found no speech in this recording."""
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ProviderError("transcription redirect refused; no fallback")
+
+
+def _open_transcription(request, *, timeout):
+    # No proxy/redirect can move local audio or bearer credentials off the selected route.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    return opener.open(request, timeout=timeout)
 
 
 @dataclass(frozen=True)
@@ -471,19 +482,23 @@ def _verbatim_recovery(audio: Path, config: ProviderConfig, api_key: str, durati
 
 def _request_text(audio: Path, config: ProviderConfig, api_key: str, prompt: str = "") -> str:
     """One transcription request; returns cleaned non-empty text or raises ProviderError."""
+    if config.name == "parakeet":
+        from parakeet_adapter import request_transcription
+        return request_transcription(audio, config)
     body, content_type = _multipart(config.model, audio, config.language, prompt)
     request = urllib.request.Request(
         config.endpoint,
         data=body,
         method="POST",
         headers={
-            "Authorization": f"Bearer {api_key}",
+            **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
             "Content-Type": content_type,
             "Accept": "application/json",
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=config.timeout) as response:
+        with (_open_transcription(request, timeout=config.timeout) if is_local_transcriber(config)
+              else urllib.request.urlopen(request, timeout=config.timeout)) as response:
             payload = json.loads(response.read())
             status = response.status
     except urllib.error.HTTPError as exc:
@@ -581,9 +596,9 @@ def transcribe(source: Path, config: ProviderConfig, *, api_key: str, prompt: st
             raise ProviderError("Tinfoil attestation route must be loopback-only")
         if config.model != "voxtral-small-24b":
             raise ProviderError("Tinfoil transcription model is not approved")
-    elif config.name != "openai-compatible":
+    elif config.name not in {"openai-compatible", "parakeet"}:
         raise ProviderError(f"unsupported provider: {config.name}")
-    if not api_key:
+    if not api_key and config.name != "parakeet" and not is_local_transcriber(config):
         raise ProviderError("provider credential is unavailable")
 
     started = time.perf_counter()
@@ -649,7 +664,7 @@ def transcribe(source: Path, config: ProviderConfig, *, api_key: str, prompt: st
         raise ProviderError(f"{config.name} returned {REFUSAL_CODE}")
     return TranscriptionResult(
         text=text,
-        provider="tinfoil-attested" if config.attested else "openai-compatible",
+        provider="tinfoil-attested" if config.attested else config.name,
         model=config.model,
         latency_ms=round((time.perf_counter() - started) * 1000, 1),
     )
@@ -664,18 +679,9 @@ def route_transcription(source: Path, language: str = "", prompt: str = "", *, m
     except ProviderConfigurationError as exc:
         raise ProviderError(str(exc)) from exc
     if language:
-        selected = ProviderConfig(
-            name=selected.name,
-            model=selected.model,
-            endpoint=selected.endpoint,
-            api_key_env=selected.api_key_env,
-            attested=selected.attested,
-            language=language[:12],
-            timeout=selected.timeout,
-            postprocess=selected.postprocess,
-        )
+        selected = replace(selected, language=language[:12])
     selected = replace(selected, postprocess=dict(selected.postprocess, mode=mode))
-    key = load_api_key(selected.api_key_env)
+    key = "" if selected.name == "parakeet" or is_local_transcriber(selected) else load_api_key(selected.api_key_env)
     # Context is optional and request-scoped: it is never written to disk, logs, or receipts.
     # Limit it before multipart assembly so callers cannot turn this into a large prompt lane.
     prompt = _clean(prompt)[:1200]

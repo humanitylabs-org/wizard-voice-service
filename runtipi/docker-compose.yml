@@ -1,0 +1,34 @@
+# Private candidate: build/preload this image on the box before installation.
+# No public registry publication is implied. See docs/wizard-app.md.
+x-runtipi:
+  schema_version: 2
+  overrides: []
+services:
+  wizard-voice-service:
+    image: wizard-voice-service:0.2.2-rc1.app1
+    pull_policy: never
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 1g
+    tmpfs:
+      - /tmp:rw,nosuid,noexec,size=512m,mode=1777
+    environment:
+      WIZARD_VOICE_CONFIG: /data/config.yaml
+      WIZARD_VOICE_DATA_DIR: /data/jobs
+      WIZARD_STT_CORRECTIONS: /data/corrections.yaml
+      WIZARD_VOICE_ENV: /dev/null
+      WIZARD_VOICE_ALLOWED_HOSTS: "127.0.0.1,localhost,wizard-voice-service"
+      WIZARD_VOICE_RETAIN_FAILED_AUDIO: "0"
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+      - ${ROOT_FOLDER_HOST}/media:/media:ro
+    ports:
+      - "127.0.0.1:${APP_PORT}:8803"
+    restart: unless-stopped
+    x-runtipi:
+      is_main: true
+      internal_port: 8803
+      add_to_main_network: true

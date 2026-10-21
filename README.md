@@ -9,6 +9,19 @@ customization must not silently become shared data.
 First-party code is MIT licensed (see [LICENSE](LICENSE)); third-party
 components keep their own licenses, listed in [THIRD_PARTY.md](THIRD_PARTY.md).
 
+## Wizard app packaging
+
+The `feature/wizard-app` candidate adds `wizard.md`, Runtipi packaging, a container
+and `/mcp` tools. Its default is the **separately installed Transcriber app**, not
+Tinfoil and not a bundled speech model. It provides `voice` and needs
+`speech-to-text-engine`; the existing transcription slot stays with Transcriber.
+Tinfoil is an optional disabled router-bound profile. No personal rules ship.
+
+See [docs/wizard-app.md](docs/wizard-app.md) for private image preload, the exact
+future Tinfoil router contract, acceptance runner and remaining default-rollout
+gates. No fleet defaults, public images or live deployment are changed here.
+The standalone instructions below retain the existing explicit-provider setup.
+
 ## What works now
 
 - File transcription through the existing Tinfoil-attested proxy route and

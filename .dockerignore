@@ -1,0 +1,12 @@
+*
+!Dockerfile
+!pyproject.toml
+!LICENSE
+!THIRD_PARTY.md
+!*.py
+!assets/
+!assets/**
+!voice_mcp/
+!voice_mcp/**
+!packaging/
+!packaging/**

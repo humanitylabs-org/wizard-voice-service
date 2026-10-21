@@ -1,0 +1,27 @@
+# Credential-free default. The engine is the separately installed Transcriber app.
+stt:
+  enabled: true
+  provider: openai-compatible
+  active_profile: local-transcriber
+  profiles:
+    local-transcriber:
+      provider: openai-compatible
+      local_engine: transcriber
+      model: Systran/faster-whisper-small
+      base_url: http://transcriber:8000
+      timeout: 900
+    tinfoil-voxtral:
+      provider: tinfoil
+      model: voxtral-small-24b
+      enabled: false
+      connection: router-tinfoil
+      timeout: 180
+  postprocess:
+    replacements: []
+voice:
+  schema_version: 1
+  lanes:
+    realtime_stt:
+      enabled: false
+    conversation:
+      enabled: false
