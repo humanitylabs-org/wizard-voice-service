@@ -86,6 +86,9 @@ def main():
     volumes:
       - hf-cache:/home/ubuntu/.cache/huggingface
   wizard-voice-service:
+    # Local source-build acceptance is separate from anonymous registry verification.
+    image: wizard-voice-service:0.2.2-rc1.app1
+    pull_policy: never
     volumes:
       - voice-data:/data
       - media:/media:ro

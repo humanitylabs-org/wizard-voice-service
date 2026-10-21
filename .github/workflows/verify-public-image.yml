@@ -29,11 +29,10 @@ jobs:
           persist-credentials: false
       - name: Verify existing immutable image without rebuilding or logging in
         env:
-          # Bootstrap PR smoke uses an existing public sibling image. Dispatch
-          # verifies this repository's new image after its visibility gate opens.
-          IMAGE: ${{ github.event_name == 'pull_request' && 'ghcr.io/humanitylabs-org/wizard-agent-service' || 'ghcr.io/humanitylabs-org/wizard-voice-service' }}
-          IMAGE_SHA: ${{ inputs.image_sha || '3a1601b3a6fafe3c038c0326d222fe26c802c706' }}
-          DIGEST: ${{ inputs.digest || 'sha256:484eaa0816395d03f48fe941bc32b1fdc210fccddbbb294fc36568bdcff54356' }}
+          # Write-once public voice fixture; PR jobs never build on the worker.
+          IMAGE: ghcr.io/humanitylabs-org/wizard-voice-service
+          IMAGE_SHA: ${{ inputs.image_sha || '510bc89f507f02fd3fd41b64605918b2a1825a82' }}
+          DIGEST: ${{ inputs.digest || 'sha256:a279274949c03bd8fe244f083f727e41f51d7040e58a48288089621f5ab27e89' }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
           python3 scripts/ci/ghcr_image.py verify
