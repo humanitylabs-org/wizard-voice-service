@@ -15,8 +15,7 @@ box-release PR should install Voice alongside Transcriber, not replace it.
 It rejects the requested `needs: [speech-to-text-engine]`. We retain the explicit
 engine dependency rather than misdeclare it as a microphone or omit it. Catalog
 admission needs an upstream slot-dependency contract/checker change; it is not
-silently worked around here. `LicenseRef-Private-Review` records the existing
-private review restriction in LICENSE; it grants no redistribution license.
+silently worked around here. First-party code is MIT (see LICENSE).
 
 Default engine: `http://transcriber:8000/v1/audio/transcriptions`, using the
 existing OpenAI-compatible adapter, `Systran/faster-whisper-small`. This exact
