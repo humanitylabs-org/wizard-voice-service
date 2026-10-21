@@ -1,0 +1,11 @@
+id: user.example-name
+kind: correction
+scope: user
+provenance: local user supplied example
+enabled: true
+priority: 100
+modes: [dictation, meeting]
+operation: regex
+pattern: '\bAcem\b'
+replacement: Acme
+case_sensitive: false

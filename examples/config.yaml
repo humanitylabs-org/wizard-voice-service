@@ -1,0 +1,14 @@
+# Explicit standalone config. Credentials belong in the process environment.
+stt:
+  enabled: true
+  provider: tinfoil
+  providers:
+    tinfoil:
+      model: voxtral-small-24b
+      proxy_url: http://127.0.0.1:3301
+      api_key_env: TINFOIL_API_KEY
+      timeout: 180
+voice:
+  schema_version: 1
+  # Optional: relative to this config, or an absolute owner-managed path.
+  # rules_file: rules.yaml

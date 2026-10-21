@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Future local contribution label (inactive seam, not an upload API)",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "label_kind", "provenance", "consent", "license"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "label_kind": {"enum": ["recognition_correction", "style_preference"]},
+    "provenance": {"type": "object", "additionalProperties": false,
+      "required": ["source", "rule_id"],
+      "properties": {"source": {"enum": ["user", "agent", "common"]}, "rule_id": {"type": "string", "minLength": 1}}},
+    "consent": {"type": "object", "additionalProperties": false,
+      "required": ["status", "collection", "upload"],
+      "properties": {"status": {"enum": ["not_granted", "granted", "revoked"]},
+        "collection": {"const": false}, "upload": {"const": false}}},
+    "license": {"type": "object", "additionalProperties": false,
+      "required": ["status"], "properties": {"status": {"enum": ["unspecified", "owner_reviewed"]}, "identifier": {"type": "string"}}}
+  }
+}

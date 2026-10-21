@@ -1,0 +1,12 @@
+diff --git a/server.py b/server.py
+--- a/server.py
++++ b/server.py
+@@ -597,7 +597,7 @@
+ async def stt(client: httpx.AsyncClient, data: bytes, depth: int = 0, prompt: str = "") -> str:
+     try:
+         r = await client.post(STT_URL, files={"file": ("chunk.wav", data, "audio/wav")},
+-                              data={"prompt": prompt} if prompt else None)
++                              data={"mode": "meeting", **({"prompt": prompt} if prompt else {})})
+         if r.status_code == 422:
+             return ""
+         if r.status_code == 502 and "no transcript" in r.text:

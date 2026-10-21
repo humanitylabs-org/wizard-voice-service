@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wizard-voice-service"
+version = "0.2.1rc2"
+description = "Standalone transcription and local correction/styling service for Wizard OS"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi==0.133.1",
+  "python-dotenv==1.2.2",
+  "python-multipart==0.0.32",
+  "PyYAML==6.0.3",
+  "uvicorn==0.41.0",
+  "numpy>=2,<2.4",
+  "onnxruntime==1.30.0",
+]
+
+[project.scripts]
+wizard-voice-rules = "voice_cli:main"
+
+[project.optional-dependencies]
+test = [
+  "httpx==0.28.1",
+  "pytest==9.0.3",
+]
+
+[tool.setuptools]
+py-modules = [
+  "client",
+  "config",
+  "control",
+  "jobs",
+  "postprocess",
+  "providers",
+  "reconcile",
+  "server",
+  "stt_refusal",
+  "speech_gate",
+  "voice_rules",
+  "voice_cli",
+]
+
+[tool.setuptools.data-files]
+"share/wizard-voice-core" = ["assets/silero_vad.onnx", "assets/SILERO-LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

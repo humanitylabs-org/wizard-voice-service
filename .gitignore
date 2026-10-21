@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv*/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.env
+*.env
+corrections.yaml
+rules.yaml
+*.lock
+state/
+private/
+evidence/
