@@ -34,7 +34,7 @@ def _merged_postprocess(raw_postprocess: object) -> dict[str, object]:
     if owned:
         postprocess["replacements"] = system_rules + owned
     return postprocess
-APPROVED_PROVIDERS = {"tinfoil", "openai-compatible", "parakeet"}
+APPROVED_PROVIDERS = {"tinfoil", "openai-compatible", "parakeet", "local-engine"}
 APPROVED_REALTIME_STT_PROVIDERS = {"tinfoil", "openai-compatible"}
 APPROVED_CONVERSATION_PROVIDERS = {"tinfoil", "openai-realtime"}
 
@@ -55,6 +55,7 @@ class ProviderConfig:
     postprocess: dict[str, object] = field(default_factory=dict)
     profile: str = ""
     privacy: str = "provider"
+    batch_policy: str = ""
 
 
 @dataclass(frozen=True)
@@ -284,6 +285,26 @@ def load_provider_config(
     if timeout < 1 or timeout > 900:
         raise ProviderConfigurationError(f"stt.providers.{name}.timeout must be between 1 and 900")
     language = str(selected.get("language") or stt.get("language") or "en").strip() or "en"
+    if selected.get("batch_policy") not in (None, "", "pause30"):
+        raise ProviderConfigurationError("unsupported batch policy; no implicit policy fallback")
+
+    if name == "local-engine":
+        engine = selected.get("local_engine")
+        approved = {"parakeet": "parakeet-tdt-0.6b-v3", "voxtral": "voxtral-mini-4b-realtime-6bit"}
+        base_url = str(selected.get("base_url") or "").strip()
+        parsed = urlparse(base_url)
+        try:
+            port = parsed.port
+        except ValueError:
+            raise ProviderConfigurationError("invalid engine port") from None
+        if (engine not in approved or model != approved.get(engine)
+                or parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}
+                or not port or parsed.path not in {"", "/"} or parsed.query or parsed.fragment
+                or parsed.username or parsed.password or selected.get("secret_env") or selected.get("api_key_env")):
+            raise ProviderConfigurationError("local engine requires an approved model and credential-free explicit loopback port")
+        return ProviderConfig(name=name, model=model, endpoint=_endpoint(base_url), api_key_env="",
+            attested=False, language=language, timeout=timeout, postprocess=postprocess,
+            profile=profile, privacy="local-host", batch_policy="pause30")
 
     if name == "parakeet":
         base_url = str(selected.get("base_url") or "").strip()
@@ -325,6 +346,7 @@ def load_provider_config(
             attested=True,
             profile=profile,
             privacy="attested-cloud",
+            batch_policy="pause30" if selected.get("batch_policy") == "pause30" else "",
             language=language,
             timeout=timeout,
             postprocess=postprocess,

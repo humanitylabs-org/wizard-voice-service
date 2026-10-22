@@ -9,17 +9,14 @@ import json
 import os
 from pathlib import Path
 import platform
-import subprocess
 import tempfile
 import threading
 import time
 import urllib.request
 import uuid
-from contextlib import asynccontextmanager
 
 MODEL = 'parakeet-tdt-0.6b-v3'
 FILES = ('config.json', 'vocab.txt', 'encoder-model.int8.onnx', 'decoder_joint-model.int8.onnx', 'nemo128.onnx')
-MAX_BYTES = 16 * 1024 * 1024
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -77,10 +74,9 @@ class Runtime:
             'execution_provider': 'CPUExecutionProvider', 'threads': threads,
             'sessions': sessions,
             'model_sha256': manifest, 'model_load_seconds': round(time.monotonic()-start, 3),
-            'fallback': None}
+            'fallback': None, 'chunk_policy': 'pause30-quietest200ms-last8s'}
 
     def transcribe(self, audio: bytes):
-        import numpy as np
         from fastapi import HTTPException
         if not self.lock.acquire(blocking=False):
             raise HTTPException(429, 'adapter busy; retry original audio')
@@ -89,61 +85,27 @@ class Runtime:
             with tempfile.TemporaryDirectory(prefix='parakeet-') as directory:
                 source = Path(directory) / 'input'
                 source.write_bytes(audio)
-                proc = subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(source),
-                    '-map', '0:a:0', '-ac', '1', '-ar', '16000', '-f', 'f32le', '-t', '121', '-'],
-                    capture_output=True, timeout=120, check=False)
-                if proc.returncode or not proc.stdout:
-                    raise HTTPException(422, 'invalid audio')
-                x = np.frombuffer(proc.stdout, dtype=np.float32)
-                if len(x) > 120 * 16000:
-                    raise HTTPException(413, 'adapter accepts at most 120 seconds per request')
-                # Prefer a low-energy boundary near 25 s, with continuous coverage.
-                # Hard cuts through a word caused omissions in real saved notes.
-                bounds = [0]
-                while len(x) - bounds[-1] > 30 * 16000:
-                    left = bounds[-1]
-                    candidates = np.arange(left + 20*16000, min(left + 30*16000, len(x)-16000)+1, 1600, dtype=int)
-                    energy = np.array([np.mean(x[i-800:i+800]**2) for i in candidates])
-                    quiet = candidates[energy <= max(0.0001, float(np.min(energy))*1.2)]
-                    cut = int(quiet[np.argmin(np.abs(quiet-(left+25*16000)))])
-                    bounds.append(cut)
-                bounds.append(len(x))
+                from batch_audio import decode
+                try:
+                    x = decode(source)
+                except ValueError as exc:
+                    raise HTTPException(413 if 'exceeds' in str(exc) else 422, str(exc)) from None
+                from batch_audio import pause_spans
+                spans = pause_spans(x)
                 texts = [self.model.recognize(x[a:b], sample_rate=16000)
-                         for a, b in zip(bounds, bounds[1:])]
+                         for a, b in spans]
                 text = ' '.join(texts).strip()
-                if not text:
-                    raise HTTPException(422, 'no transcript; retry original audio')
             return {'text': text, 'provider': 'parakeet', 'model': MODEL,
-                    'instance': self.receipt['instance'], 'latency_ms': round((time.monotonic()-start)*1000, 1)}
+                    'instance': self.receipt['instance'], 'chunks': [
+                        {'start': a/16000, 'end': b/16000} for a, b in spans],
+                    'latency_ms': round((time.monotonic()-start)*1000, 1)}
         finally:
             self.lock.release()
 
 
 def create_app():
-    from fastapi import FastAPI, HTTPException, Request
-    from starlette.concurrency import run_in_threadpool
-    from starlette.middleware.trustedhost import TrustedHostMiddleware
-    @asynccontextmanager
-    async def lifespan(app):
-        app.state.runtime = Runtime()
-        yield
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=['localhost', '127.0.0.1', 'testserver'])
-    @app.get('/health')
-    def health():
-        return app.state.runtime.receipt
-    # Request annotation must resolve in module globals for FastAPI.
-    globals()['Request'] = Request
-    @app.post('/v1/audio/transcriptions')
-    async def transcribe(request: Request):
-        data = bytearray()
-        async for chunk in request.stream():
-            data.extend(chunk)
-            if len(data) > MAX_BYTES:
-                raise HTTPException(413, 'audio too large')
-        if not data:
-            raise HTTPException(400, 'empty audio')
-        return await run_in_threadpool(app.state.runtime.transcribe, bytes(data))
-    return app
+    from local_engine_api import create_engine_app
+    return create_engine_app(Runtime, MODEL)
+
 
 app = create_app()

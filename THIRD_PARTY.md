@@ -17,6 +17,9 @@ licensed (see LICENSE); upstream components keep the licenses listed below.
 | NumPy | local VAD arrays | BSD-3-Clause, https://github.com/numpy/numpy |
 | ONNX Runtime | local VAD runtime | MIT, https://github.com/microsoft/onnxruntime |
 | onnx-asr | optional CPU-only Parakeet sidecar | upstream distribution notices, https://github.com/istupakov/onnx-asr |
+| voxmlx | optional local Voxtral 4B batch engine | MIT, https://github.com/awni/voxmlx |
+| MLX | optional Apple Silicon execution | MIT, https://github.com/ml-explore/mlx |
+| mistral-common | optional Voxtral tokenizer | Apache-2.0, https://github.com/mistralai/mistral-common |
 | Silero VAD | bundled ONNX speech detection | MIT, https://github.com/snakers4/silero-vad |
 | FFmpeg / ffprobe | system audio tools, not bundled | LGPL/GPL depending on installed build, https://ffmpeg.org/legal.html |
 | pytest / httpx | test-only | MIT / BSD-3-Clause, upstream project distributions |
@@ -35,3 +38,9 @@ the ONNX conversion from `istupakov/parakeet-tdt-0.6b-v3-onnx`, record its revis
 and verify every model-file hash. The staged trial uses revision
 `8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce`. Review both the conversion's notices
 and NVIDIA's original Parakeet model terms before redistributing weights.
+
+The optional Voxtral runtime and converted 4B model pins are recorded in
+`docs/three-engine-trial.md`. Model files are not bundled. The upstream model
+card for `mistralai/Voxtral-Mini-4B-Realtime-2602` declares Apache-2.0; inspect
+the pinned conversion and upstream notices before distributing an engine app.
+This is a batch adaptation of a Realtime model, not Voxtral Small 24B parity.

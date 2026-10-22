@@ -337,6 +337,10 @@ def _multipart(model: str, audio: Path, language: str, prompt: str = "") -> tupl
     import secrets
 
     boundary = f"wizard-stt-{secrets.token_hex(16)}"
+    audio_types = {".wav": "audio/wav", ".mp3": "audio/mpeg", ".flac": "audio/flac",
+                   ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".webm": "audio/webm", ".aiff": "audio/aiff"}
+    suffix = audio.suffix.lower() if audio.suffix.lower() in audio_types else ".bin"
+    audio_type = audio_types.get(suffix, "application/octet-stream")
     fields = [
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{model}\r\n".encode(),
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n{language}\r\n".encode(),
@@ -348,7 +352,7 @@ def _multipart(model: str, audio: Path, language: str, prompt: str = "") -> tupl
         )
     body = b"".join(
         fields + [
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"voice.mp3\"\r\nContent-Type: audio/mpeg\r\n\r\n".encode(),
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"voice{suffix}\"\r\nContent-Type: {audio_type}\r\n\r\n".encode(),
             audio.read_bytes(),
             b"\r\n",
             f"--{boundary}--\r\n".encode(),
@@ -591,6 +595,9 @@ def _transcribe_segment(
 
 
 def transcribe(source: Path, config: ProviderConfig, *, api_key: str, prompt: str = "") -> TranscriptionResult:
+    if config.name == "local-engine" or config.batch_policy == "pause30":
+        from isolated_batch import transcribe_batch
+        return transcribe_batch(source, config, api_key=api_key)
     if config.name == "tinfoil":
         if config.endpoint != "http://127.0.0.1:3301/v1/audio/transcriptions" and config.endpoint != "http://localhost:3301/v1/audio/transcriptions":
             raise ProviderError("Tinfoil attestation route must be loopback-only")
@@ -681,7 +688,7 @@ def route_transcription(source: Path, language: str = "", prompt: str = "", *, m
     if language:
         selected = replace(selected, language=language[:12])
     selected = replace(selected, postprocess=dict(selected.postprocess, mode=mode))
-    key = "" if selected.name == "parakeet" or is_local_transcriber(selected) else load_api_key(selected.api_key_env)
+    key = "" if selected.name in {"parakeet", "local-engine"} or is_local_transcriber(selected) else load_api_key(selected.api_key_env)
     # Context is optional and request-scoped: it is never written to disk, logs, or receipts.
     # Limit it before multipart assembly so callers cannot turn this into a large prompt lane.
     prompt = _clean(prompt)[:1200]

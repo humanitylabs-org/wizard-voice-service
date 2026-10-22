@@ -45,6 +45,10 @@ py-modules = [
   "voice_cli",
   "profile_cli",
   "parakeet_adapter",
+  "batch_audio",
+  "local_engine_api",
+  "voxtral_adapter",
+  "isolated_batch",
 ]
 
 [tool.setuptools.data-files]

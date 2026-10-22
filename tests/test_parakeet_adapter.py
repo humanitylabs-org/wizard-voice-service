@@ -41,7 +41,7 @@ def test_adapter_contiguous_coverage():
 def test_adapter_oversize_never_silently_truncates():
     r, lengths = runtime()
     with pytest.raises(HTTPException) as exc:
-        r.transcribe(wave_bytes(122))
+        r.transcribe(wave_bytes(901))
     assert exc.value.status_code == 413 and lengths == []
     assert not r.lock.locked()
 

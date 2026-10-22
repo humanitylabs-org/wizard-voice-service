@@ -1,0 +1,34 @@
+# Candidate only: copy to an isolated directory, never to the daily configuration.
+stt:
+  enabled: true
+  provider: tinfoil
+  active_profile: parakeet-local
+  profiles:
+    tinfoil-voxtral:
+      provider: tinfoil
+      model: voxtral-small-24b
+      proxy_url: http://127.0.0.1:3301
+      secret_env: TINFOIL_API_KEY
+      batch_policy: pause30
+      timeout: 900
+    parakeet-local:
+      provider: local-engine
+      local_engine: parakeet
+      model: parakeet-tdt-0.6b-v3
+      base_url: http://127.0.0.1:19865
+      timeout: 900
+    voxtral-local:
+      provider: local-engine
+      local_engine: voxtral
+      model: voxtral-mini-4b-realtime-6bit
+      base_url: http://127.0.0.1:19866
+      timeout: 900
+  postprocess:
+    replacements: []
+voice:
+  schema_version: 1
+  lanes:
+    realtime_stt:
+      enabled: false
+    conversation:
+      enabled: false
