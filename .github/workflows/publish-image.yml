@@ -90,3 +90,26 @@ jobs:
         run: >-
           python3 scripts/ci/ghcr_image.py verify
           --image "$IMAGE" --sha "$GITHUB_SHA" --digest "$DIGEST" --release "$RELEASE_TAG"
+
+  attest:
+    # Signed build provenance: records that this exact image digest was built by this repo's CI from this commit.
+    # Verify: gh attestation verify oci://ghcr.io/humanitylabs-org/wizard-voice-service@<digest> --owner humanitylabs-org
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/humanitylabs-org/wizard-voice-service
+          subject-digest: ${{ needs.publish.outputs.digest }}
+          push-to-registry: true
