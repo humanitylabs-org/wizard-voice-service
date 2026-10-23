@@ -1,0 +1,3 @@
+# Secret scan config for this public repo. Extends gitleaks default rules.
+[extend]
+useDefault = true
