@@ -2,6 +2,7 @@
 """Publish on the trusted worker; verify from a credential-free consumer job."""
 import argparse
 import base64
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -69,6 +70,17 @@ def platform_manifests(registry, digest):
 
 def docker(args, env, **kwargs):
     return subprocess.run(["docker", *args], env=env, check=True, **kwargs)
+
+
+@contextmanager
+def isolated_builder(env):
+    """Use bundled BuildKit emulators, without global contexts or binfmt changes."""
+    name = 'ci-' + Path(env['DOCKER_CONFIG']).name
+    docker(['buildx', 'create', '--name', name, '--driver', 'docker-container'], env)
+    try:
+        yield name
+    finally:
+        docker(['buildx', 'rm', name], env)
 
 
 def clean_env(config):
@@ -146,10 +158,11 @@ def publish(args):
                 print("Reusing immutable SHA tag", digest, flush=True)
             else:
                 metadata = Path(config, "metadata.json")
-                docker(["buildx", "build", "--platform", "linux/amd64,linux/arm64", "--provenance=false",
-                        "--label", "org.opencontainers.image.source=https://github.com/" + os.environ["GITHUB_REPOSITORY"],
-                        "--label", "org.opencontainers.image.revision=" + args.sha,
-                        "--tag", args.image + ":" + args.tag, "--metadata-file", str(metadata), "--push", "."], env)
+                with isolated_builder(env) as builder:
+                    docker(["buildx", "build", "--builder", builder, "--platform", "linux/amd64,linux/arm64", "--provenance=false",
+                            "--label", "org.opencontainers.image.source=https://github.com/" + os.environ["GITHUB_REPOSITORY"],
+                            "--label", "org.opencontainers.image.revision=" + args.sha,
+                            "--tag", args.image + ":" + args.tag, "--metadata-file", str(metadata), "--push", "."], env)
                 digest = json.loads(metadata.read_text())["containerimage.digest"]
                 registry = Registry(args.image, authenticated=True)
                 if registry.manifest(args.tag)[0] != digest:

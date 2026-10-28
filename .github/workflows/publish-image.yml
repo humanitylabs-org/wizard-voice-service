@@ -30,6 +30,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    # Explicit trusted branch dispatch builds locally, with no registry credentials or writes.
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/forum-runner-')
+    runs-on: [self-hosted, Linux, X64, forum, wizard-voice-service]
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Publication contracts and native Linux image smoke (no push)
+        run: |
+          python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
+          image="voice-forum-preflight:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker image rm "$image" >/dev/null 2>&1 || true' EXIT
+          # Exercise the exact multi-platform builder without touching the registry.
+          flock "$WIZARD_CI_WORKER_LOCK" python3 scripts/ci/forum_preflight.py "$image"
+          docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges --entrypoint python "$image" -c 'import server, speech_gate; print("native Linux image imports passed")'
   validate:
     runs-on: ubuntu-24.04
     steps:
@@ -46,7 +65,7 @@ jobs:
       github.repository == 'humanitylabs-org/wizard-voice-service' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: [self-hosted, macOS, ARM64, wizard-ghcr-wizard-voice-service]
+    runs-on: [self-hosted, Linux, X64, forum, wizard-voice-service]
     timeout-minutes: 100
     permissions:
       contents: read
