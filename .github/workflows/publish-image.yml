@@ -46,7 +46,8 @@ jobs:
           python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
           image="voice-forum-preflight:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           trap 'docker image rm "$image" >/dev/null 2>&1 || true' EXIT
-          flock "$WIZARD_CI_WORKER_LOCK" docker build --platform linux/amd64 --build-arg VCS_REF="$GITHUB_SHA" -t "$image" .
+          # Exercise the exact multi-platform builder without touching the registry.
+          flock "$WIZARD_CI_WORKER_LOCK" python3 scripts/ci/forum_preflight.py "$image"
           docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges --entrypoint python "$image" -c 'import server, speech_gate; print("native Linux image imports passed")'
   validate:
     runs-on: ubuntu-24.04
