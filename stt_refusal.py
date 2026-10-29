@@ -47,7 +47,6 @@ _INABILITY = (
     r"|i\s+can?['\u2019]?t\s+provide\b"
     r"|i\s+can?['\u2019]?t\s+assist\b"
     r"|i\s+can?['\u2019]?t\s+help\s+with\b"
-    r"|i\s+can(?:not|['\u2019]?t)\s+find\s+(?:(?:any|the)\s+)?audio\s+to\s+transcribe\b"
     r"|i\s+do(?:n?['\u2019]t|\s+not)\s+have\s+the\s+capability\b"
 )
 # Offered-help closers that mark whole-chunk assistant boilerplate.

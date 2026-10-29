@@ -124,3 +124,28 @@ def test_failed_audio_retention_opt_in(tmp_path, monkeypatch):
     server._retain_failure(source, ".wav", "synthetic failure")
     files = list(server.FAILED_AUDIO_DIR.glob("*.wav"))
     assert len(files) == 1 and files[0].stat().st_mode & 0o777 == 0o600
+
+
+def test_private_buffer_is_opt_in_and_never_breaks(tmp_path, monkeypatch):
+    import json
+    import server
+    from types import SimpleNamespace
+    source = tmp_path / "audio.m4a"
+    source.write_bytes(b"synthetic")
+    result = SimpleNamespace(text="that is so funny haha", provider="tinfoil-attested", model="voxtral", latency_ms=1)
+    target = tmp_path / "buffer"
+    monkeypatch.delenv("WIZARD_VOICE_PRIVATE_BUFFER_DIR", raising=False)
+    server._buffer_private(source, ".m4a", "dictation", result)
+    assert not target.exists()
+    monkeypatch.setenv("WIZARD_VOICE_PRIVATE_BUFFER_DIR", str(target))
+    server._buffer_private(source, ".m4a", "meeting", result)  # meeting mode is not buffered by default
+    assert not target.exists()
+    server._buffer_private(source, ".m4a", "dictation", result)
+    sidecars = list(target.glob("*.json"))
+    assert len(sidecars) == 1 and not list(target.glob(".*"))
+    meta = json.loads(sidecars[0].read_text())
+    assert meta["text"] == result.text and meta["mode"] == "dictation"
+    audio = target / meta["audio"]
+    assert audio.read_bytes() == b"synthetic" and audio.stat().st_mode & 0o777 == 0o600
+    monkeypatch.setenv("WIZARD_VOICE_PRIVATE_BUFFER_DIR", str(source))  # a file, not a folder: must not raise
+    server._buffer_private(source, ".m4a", "dictation", result)

@@ -34,7 +34,7 @@ def _merged_postprocess(raw_postprocess: object) -> dict[str, object]:
     if owned:
         postprocess["replacements"] = system_rules + owned
     return postprocess
-APPROVED_PROVIDERS = {"tinfoil", "openai-compatible", "parakeet"}
+APPROVED_PROVIDERS = {"tinfoil", "openai-compatible"}
 APPROVED_REALTIME_STT_PROVIDERS = {"tinfoil", "openai-compatible"}
 APPROVED_CONVERSATION_PROVIDERS = {"tinfoil", "openai-realtime"}
 
@@ -53,8 +53,6 @@ class ProviderConfig:
     language: str = "en"
     timeout: int = 180
     postprocess: dict[str, object] = field(default_factory=dict)
-    profile: str = ""
-    privacy: str = "provider"
 
 
 @dataclass(frozen=True)
@@ -144,9 +142,7 @@ def load_voice_control_config(path: Path | str | None = None) -> VoiceControlCon
     stt = _mapping(root.get("stt"), "stt")
     selected = load_provider_config(config_path, require_enabled=False)
     providers = _mapping(stt.get("providers"), "stt.providers")
-    # Batch profiles must never implicitly switch the legacy realtime lane.
-    realtime_provider_name = str(stt.get("provider") or selected.name)
-    selected_raw = _mapping(providers.get(realtime_provider_name), f"stt.providers.{realtime_provider_name}")
+    selected_raw = _mapping(providers.get(selected.name), f"stt.providers.{selected.name}")
     voice = _mapping(root.get("voice"), "voice")
     lanes = _mapping(voice.get("lanes"), "voice.lanes")
 
@@ -162,7 +158,7 @@ def load_voice_control_config(path: Path | str | None = None) -> VoiceControlCon
     realtime = _lane(
         "realtime_stt",
         _mapping(lanes.get("realtime_stt"), "voice.lanes.realtime_stt"),
-        fallback_provider=realtime_provider_name,
+        fallback_provider=selected.name,
         fallback_model=str(selected_raw.get("realtime_model") or ""),
         fallback_transport="websocket",
     )
@@ -205,37 +201,6 @@ def load_voice_control_config(path: Path | str | None = None) -> VoiceControlCon
     )
 
 
-def _router_tinfoil(profile: dict) -> dict:
-    """Future router projection; no implicit legacy proxy or key fallback."""
-    missing = "Tinfoil profile is disabled: no router connection config (WIZARD_VOICE_TINFOIL_CONNECTION)"
-    path = os.environ.get("WIZARD_VOICE_TINFOIL_CONNECTION", "")
-    if not path:
-        raise ProviderConfigurationError(missing)
-    try:
-        connection = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ProviderConfigurationError("Tinfoil router connection config is unavailable or invalid") from exc
-    if not isinstance(connection, dict) or (
-        connection.get("schema_version") != 1
-        or connection.get("provider") != "tinfoil"
-        or connection.get("model") != "voxtral-small-24b"
-        or connection.get("endpoint") != "http://127.0.0.1:3301/v1/audio/transcriptions"
-        or connection.get("attestation_required") is not True
-        or connection.get("api_key_env") != "WIZARD_VOICE_TINFOIL_KEY"
-    ):
-        raise ProviderConfigurationError("Tinfoil connection requires the approved loopback attestation proxy, model and auth binding")
-    if not os.environ.get("WIZARD_VOICE_TINFOIL_KEY", "").strip():
-        raise ProviderConfigurationError("Tinfoil router connection credential is unavailable")
-    return dict(profile, enabled=True, proxy_url="http://127.0.0.1:3301",
-                secret_env="WIZARD_VOICE_TINFOIL_KEY")
-
-
-def is_local_transcriber(config: ProviderConfig) -> bool:
-    return (config.name == "openai-compatible" and config.privacy == "local-box"
-            and config.endpoint == "http://transcriber:8000/v1/audio/transcriptions"
-            and not config.api_key_env)
-
-
 def load_provider_config(
     path: Path | str | None = None,
     *,
@@ -245,24 +210,13 @@ def load_provider_config(
     stt = _mapping(root.get("stt"), "stt")
     if require_enabled and stt.get("enabled") is False:
         raise ProviderConfigurationError("system STT is disabled")
-    profile = stt.get("active_profile", "")
-    profile_raw = None
-    if profile:
-        profiles = _mapping(stt.get("profiles"), "stt.profiles")
-        if not isinstance(profile, str) or profile not in profiles:
-            raise ProviderConfigurationError("unknown active profile")
-        profile_raw = _mapping(profiles[profile], "selected profile")
-    name = str((profile_raw if profile_raw is not None else stt).get("provider") or "").strip().lower()
+    name = str(stt.get("provider") or "").strip().lower()
     if name not in APPROVED_PROVIDERS:
         raise ProviderConfigurationError(
             f"stt.provider must be one of {', '.join(sorted(APPROVED_PROVIDERS))}; got {name or 'unset'}"
         )
     providers = _mapping(stt.get("providers"), "stt.providers")
-    selected = profile_raw if profile_raw is not None else _mapping(providers.get(name), f"stt.providers.{name}")
-    if selected.get("connection") == "router-tinfoil":
-        selected = _router_tinfoil(selected)
-    elif selected.get("enabled") is False:
-        raise ProviderConfigurationError(f"profile {profile or name} is disabled")
+    selected = _mapping(providers.get(name), f"stt.providers.{name}")
     postprocess = _merged_postprocess(stt.get("postprocess"))
     from voice_rules import RuleError, read_rules
     rule_path = os.environ.get("WIZARD_VOICE_RULES") or _mapping(root.get("voice"), "voice").get("rules_file")
@@ -285,27 +239,6 @@ def load_provider_config(
         raise ProviderConfigurationError(f"stt.providers.{name}.timeout must be between 1 and 900")
     language = str(selected.get("language") or stt.get("language") or "en").strip() or "en"
 
-    if name == "parakeet":
-        base_url = str(selected.get("base_url") or "").strip()
-        parsed = urlparse(base_url)
-        # Remote hosts require an owner-managed encrypted tunnel.
-        try:
-            port = parsed.port
-        except ValueError as exc:
-            raise ProviderConfigurationError("Parakeet adapter port is invalid") from exc
-        if (parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1"}
-                or parsed.username or parsed.password or parsed.path not in {"", "/"}
-                or parsed.query or parsed.fragment or not port):
-            raise ProviderConfigurationError("Parakeet requires an explicit loopback HTTP adapter port (tunnel for remote)")
-        if model != "parakeet-tdt-0.6b-v3":
-            raise ProviderConfigurationError("Parakeet model must be parakeet-tdt-0.6b-v3")
-        privacy = selected.get("privacy")
-        if privacy not in {"local-host", "private-remote"}:
-            raise ProviderConfigurationError("Parakeet privacy must be local-host or private-remote")
-        return ProviderConfig(name=name, model=model, endpoint=_endpoint(base_url),
-            api_key_env="", attested=False, language=language, timeout=timeout,
-            postprocess=postprocess, profile=profile, privacy=privacy)
-
     if name == "tinfoil":
         base_url = str(selected.get("proxy_url") or "http://127.0.0.1:3301").strip()
         if model != "voxtral-small-24b":
@@ -323,8 +256,6 @@ def load_provider_config(
                 or "TINFOIL_API_KEY"
             ).strip(),
             attested=True,
-            profile=profile,
-            privacy="attested-cloud",
             language=language,
             timeout=timeout,
             postprocess=postprocess,
@@ -334,11 +265,7 @@ def load_provider_config(
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ProviderConfigurationError("OpenAI-compatible base_url is invalid")
-    local_engine = selected.get("local_engine")
-    if local_engine is not None:
-        if local_engine != "transcriber" or base_url not in {"http://transcriber:8000", "http://transcriber:8000/v1"}:
-            raise ProviderConfigurationError("local_engine must use the installed transcriber at http://transcriber:8000")
-    elif parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "localhost"}:
+    if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "localhost"}:
         raise ProviderConfigurationError("OpenAI-compatible base_url must use HTTPS or loopback HTTP")
     endpoint = base_url.rstrip("/")
     if not endpoint.endswith("/v1"):
@@ -347,7 +274,7 @@ def load_provider_config(
         name=name,
         model=model,
         endpoint=endpoint + "/audio/transcriptions",
-        api_key_env="" if local_engine else str(
+        api_key_env=str(
             selected.get("secret_env")
             or selected.get("api_key_env")
             or "VOICE_TOOLS_OPENAI_KEY"
@@ -356,6 +283,4 @@ def load_provider_config(
         language=language,
         timeout=timeout,
         postprocess=postprocess,
-        profile=profile,
-        privacy="local-box" if local_engine else "provider",
     )
