@@ -27,9 +27,7 @@ async def lifespan(_app: FastAPI):
         _stop_jobs()
 
 
-app = FastAPI(title="Wizard Voice Service", version="0.2.2rc1", docs_url=None, redoc_url=None, lifespan=lifespan)
-from voice_mcp.front import router as mcp_router
-app.include_router(mcp_router)
+app = FastAPI(title="Wizard Voice Service", version="0.2.0", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=[
@@ -82,8 +80,6 @@ def health() -> dict[str, object]:
         "provider": selected.name,
         "model": selected.model,
         "attested": selected.attested,
-        "profile": selected.profile,
-        "privacy": selected.privacy,
         "fallback": None,
     }
 
@@ -158,6 +154,45 @@ def _retain_failure(temp_path: Path, suffix: str, reason: str) -> None:
         pass
 
 
+PRIVATE_BUFFER_MAX_BYTES = 25 * 1024 * 1024
+
+
+def _buffer_private(temp_path: Path, suffix: str, mode: str, result) -> None:
+    """Hand a copy of a successful recording and its transcript to an owner-private buffer
+    (for example the Airlock app's voice inbox) so it can be replayed or audited later
+    through an owner-approved release. Off unless WIZARD_VOICE_PRIVATE_BUFFER_DIR is set.
+    The JSON sidecar is written last and atomically: its presence marks a complete pair.
+    Never changes the response."""
+    import secrets
+    import sys
+    import time as _time
+
+    target_dir = os.environ.get("WIZARD_VOICE_PRIVATE_BUFFER_DIR", "").strip()
+    modes = {m.strip() for m in os.environ.get("WIZARD_VOICE_PRIVATE_BUFFER_MODES", "dictation,verbatim").split(",") if m.strip()}
+    if not target_dir or mode not in modes:
+        return
+    try:
+        size = temp_path.stat().st_size
+        if size > PRIVATE_BUFFER_MAX_BYTES or not (result.text or "").strip():
+            return
+        folder = Path(target_dir)
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        stem = _time.strftime("%Y%m%dT%H%M%SZ", _time.gmtime()) + "-" + secrets.token_hex(4)
+        ext = suffix if suffix.startswith(".") and suffix[1:].isalnum() else ".bin"
+        import shutil
+        audio = folder / f"{stem}{ext}"
+        shutil.copyfile(temp_path, audio)
+        audio.chmod(0o600)
+        meta = {"created": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()), "mode": mode, "text": result.text,
+                "provider": result.provider, "model": result.model, "bytes": size, "audio": audio.name}
+        part = folder / f".{stem}.json.part"
+        part.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        part.chmod(0o600)
+        os.replace(part, folder / f"{stem}.json")
+    except Exception as exc:  # noqa: BLE001 - the private buffer must never change the response
+        print(f"wizard-stt private buffer skipped: {type(exc).__name__}", file=sys.stderr, flush=True)
+
+
 def _transcribe_upload(file: UploadFile, language: str, prompt: str = "", mode: str = "dictation") -> dict[str, object]:
     from voice_rules import MODES
     if mode not in MODES:
@@ -186,6 +221,7 @@ def _transcribe_upload(file: UploadFile, language: str, prompt: str = "", mode: 
         except ProviderError as exc:
             _retain_failure(temp_path, suffix, str(exc))
             raise HTTPException(status_code=502, detail=str(exc)[:500]) from exc
+        _buffer_private(temp_path, suffix, mode, result)
         return {
             "text": result.text,
             "provider": result.provider,

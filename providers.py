@@ -11,11 +11,11 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable
 
 from dotenv import dotenv_values
 
-from config import ProviderConfig, ProviderConfigurationError, is_local_transcriber, load_provider_config
+from config import ProviderConfig, ProviderConfigurationError, load_provider_config
 from postprocess import apply_transcription_postprocess
 from stt_refusal import _APOLOGY_ONLY, _PATTERN, _SORRY, REFUSAL_CODE, is_assistant_refusal
 from speech_gate import SpeechGateError, detect_no_speech
@@ -46,16 +46,15 @@ CHUNK_CONCURRENCY = max(
 )
 
 
-# Whole-note and fallback attempts share the original request deadline.
-# A deterministic provider stall gets bounded same-model contextual splits.
+# Normal 30-second segments return in 1-3 s. Voxtral occasionally stalls on a
+# specific segment until the HTTP deadline (deterministically, on retry too),
+# which used to consume the whole request budget. Short segments get a short
+# deadline; a stalled segment is re-split into halves on the same model.
 SEGMENT_ATTEMPT_TIMEOUT = max(
     10,
     min(240, int(os.environ.get("WIZARD_STT_SEGMENT_TIMEOUT_SECONDS", "45"))),
 )
 SEGMENT_SPLIT_MIN_SECONDS = 8.0
-WHOLE_NOTE_SECONDS = 120.0
-# Even two maximum-sized adjacent spans plus context fit a 120 s join reread.
-MAX_SEGMENT_SECONDS = 45
 
 
 class ProviderError(RuntimeError):
@@ -64,17 +63,6 @@ class ProviderError(RuntimeError):
 
 class NoSpeechError(ProviderError):
     """The local acoustic gate found no speech in this recording."""
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise ProviderError("transcription redirect refused; no fallback")
-
-
-def _open_transcription(request, *, timeout):
-    # No proxy/redirect can move local audio or bearer credentials off the selected route.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
-    return opener.open(request, timeout=timeout)
 
 
 @dataclass(frozen=True)
@@ -108,33 +96,54 @@ def postprocess_transcript(transcript: str, postprocess: object = None) -> str:
         return transcript
 
 
+def _ffmpeg_kwargs() -> dict:
+    return {
+        "capture_output": True,
+        "text": True,
+        "timeout": 300,
+        "check": False,
+        "env": {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": os.environ.get("HOME", str(Path.home())),
+            "LANG": os.environ.get("LANG", "C.UTF-8"),
+        },
+    }
+
+
+def _tolerant_retry(command: list[str]) -> list[str]:
+    """Same ffmpeg command without -xerror, skipping damaged packets.
+
+    Phone recorders (opus-media-recorder in Android WebView) can close an Ogg
+    stream with an empty end-of-stream packet that ffmpeg's demuxer rejects
+    after decoding every real packet. Under -xerror that rejected a whole
+    71 s Messenger voice note; ignoring the damaged packet keeps all audio.
+    """
+    tolerant = [part for part in command if part != "-xerror"]
+    index = tolerant.index("-i")
+    return tolerant[:index] + ["-err_detect", "ignore_err", "-fflags", "+discardcorrupt"] + tolerant[index:]
+
+
 def normalize_audio(
     source: Path,
     output: Path,
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> None:
-    completed = runner(
-        [
-            "ffmpeg", "-nostdin", "-v", "error", "-xerror", "-y",
-            "-i", str(source), "-map", "0:a:0",
-            # Browser MediaRecorder WebM (Chromium on Linux/Omarchy) can carry
-            # non-monotonic timestamps; rebuild a continuous clock before muxing.
-            "-af", "aresample=async=1:first_pts=0,asetpts=N/SR/TB",
-            "-ac", "1", "-ar", "16000",
-            "-c:a", "libmp3lame", "-b:a", "64k", str(output),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=300,
-        check=False,
-        env={
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "HOME": os.environ.get("HOME", str(Path.home())),
-            "LANG": os.environ.get("LANG", "C.UTF-8"),
-        },
-    )
+    command = [
+        "ffmpeg", "-nostdin", "-v", "error", "-xerror", "-y",
+        "-i", str(source), "-map", "0:a:0",
+        # Browser MediaRecorder WebM (Chromium on Linux/Omarchy) can carry
+        # non-monotonic timestamps; rebuild a continuous clock before muxing.
+        "-af", "aresample=async=1:first_pts=0,asetpts=N/SR/TB",
+        "-ac", "1", "-ar", "16000",
+        "-c:a", "libmp3lame", "-b:a", "64k", str(output),
+    ]
+    completed = runner(command, **_ffmpeg_kwargs())
     if completed.returncode != 0 or not output.is_file() or output.stat().st_size == 0:
+        output.unlink(missing_ok=True)
+        retry = runner(_tolerant_retry(command), **_ffmpeg_kwargs())
+        if retry.returncode == 0 and output.is_file() and output.stat().st_size > 0:
+            return
         raise ProviderError(f"audio normalization failed: {_clean(completed.stderr)[:180]}")
 
 
@@ -145,177 +154,137 @@ def normalize_audio_chunks(
     chunk_seconds: int = PROVIDER_CHUNK_SECONDS,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> list[Path]:
-    """Normalize once; preserve whole-note context before considering any cuts.
+    """Normalize once and segment below hosted STT decoded-audio limits.
 
-    The legacy chunk-size override now bounds *fallback* segments, not the
-    whole-note attempt. All fallback seams overlap and must reconcile exactly.
+    Segments end in the quietest moment shortly before each nominal boundary,
+    so a cut never lands mid-word. A fixed-length cut once split "meaning" at
+    exactly 30 s: one segment heard "the M." and the next began "of a word",
+    and the words spoken across the cut vanished from the transcript.
     """
-    whole = directory / "voice-whole.mp3"
-    normalize_audio(source, whole, runner=runner)
-    if _audio_duration(whole) <= WHOLE_NOTE_SECONDS:
-        return [whole]
-    return _segment_audio(whole, target_seconds=min(MAX_SEGMENT_SECONDS, max(30, chunk_seconds)))
-
-
-def _pause_centres(audio: Path) -> list[float]:
-    # Energy pauses only choose cut positions; Silero remains the speech gate.
-    result = subprocess.run(
-        ["ffmpeg", "-nostdin", "-v", "info", "-i", str(audio),
-         "-af", "silencedetect=noise=-35dB:d=0.25", "-f", "null", "-"],
-        capture_output=True, text=True, timeout=300, check=False,
+    output_pattern = directory / "voice-%03d.mp3"
+    cut_times = _pause_cut_times(source, chunk_seconds)
+    split_args = (
+        ["-segment_times", ",".join(f"{value:.3f}" for value in cut_times)]
+        if cut_times else ["-segment_time", str(chunk_seconds)]
     )
-    if result.returncode:
-        raise ProviderError("audio pause detection failed")
-    pauses = []
-    start = None
-    for kind, value in re.findall(r"silence_(start|end):\s*([0-9.]+)", result.stderr):
-        if kind == "start":
-            start = float(value)
-        elif start is not None:
-            pauses.append((start + float(value)) / 2)
-            start = None
-    return pauses
-
-
-def _segment_spans(duration: float, pauses: list[float], target_seconds: float) -> list[tuple[float, float]]:
-    """Continuous coverage, pause nearest target, and bounded bilateral context."""
-    cuts = [0.0]
-    while duration - cuts[-1] > target_seconds + 5:
-        target = cuts[-1] + target_seconds
-        radius = min(5, target_seconds / 4)
-        choices = [p for p in pauses if abs(p - target) <= radius]
-        cut = min(choices, key=lambda p: (abs(p - target), p)) if choices else target
-        cuts.append(cut)
-    cuts.append(duration)
-    overlap = min(4.0, target_seconds / 4)
-    return [(max(0.0, a - overlap) if i else 0.0,
-             min(duration, b + overlap) if i < len(cuts) - 2 else duration)
-            for i, (a, b) in enumerate(zip(cuts, cuts[1:]))]
-
-
-class ContextSegments(list[Path]):
-    """Request-local normalized source and time spans for bounded seam rereads."""
-
-    def __init__(self, paths: list[Path], audio: Path, spans: list[tuple[float, float]]):
-        super().__init__(paths)
-        self.audio = audio
-        self.spans = spans
-
-
-def _render_span(audio: Path, start: float, end: float, out: Path) -> None:
-    completed = subprocess.run(
-        ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-y", "-i", str(audio),
-         "-ss", f"{start:.6f}", "-t", f"{end - start:.6f}",
-         "-c:a", "libmp3lame", "-b:a", "64k", str(out)],
-        capture_output=True, text=True, timeout=60, check=False,
-    )
-    if completed.returncode or not out.is_file() or out.stat().st_size == 0:
-        raise ProviderError("context segment could not be prepared")
-
-
-def _segment_audio(audio: Path, *, target_seconds: float) -> list[Path]:
-    duration = _audio_duration(audio)
-    spans = _segment_spans(duration, _pause_centres(audio), target_seconds)
-    parts = []
-    for index, (start, end) in enumerate(spans):
-        out = audio.with_name(f"{audio.stem}-split{index}.mp3")
-        _render_span(audio, start, end, out)
-        parts.append(out)
-    return ContextSegments(parts, audio, spans)
-
-
-_SEAM_WORD = re.compile(r"\w+(?:['’]\w+)*", re.UNICODE)
-
-
-def _join_overlap(left: str, right: str) -> str:
-    """Only exact, unique suffix/prefix agreement can remove overlap.
-
-    Never fuzzy-match or let an LLM rewrite a seam. Repetitive, conflicting,
-    empty or insufficient anchors fail recoverably; the caller retains audio.
-    """
-    a = [m.group().casefold().replace('’', "'") for m in _SEAM_WORD.finditer(left)]
-    matches = list(_SEAM_WORD.finditer(right))
-    b = [m.group().casefold().replace('’', "'") for m in matches]
-    lengths = [n for n in range(3, min(len(a), len(b), 80) + 1) if a[-n:] == b[:n]]
-    if len(lengths) != 1:
-        raise ProviderError("transcript_seam_unresolved: retry with original audio")
-    n = lengths[0]
-    anchor = b[:n]
-    count = lambda words: sum(words[i:i+n] == anchor for i in range(len(words)-n+1))
-    if len(set(anchor)) < 3 or count(a) != 1 or count(b) != 1:
-        raise ProviderError("transcript_seam_unresolved: ambiguous repeated speech")
-    # Preserve source wording/punctuation; discard only the agreed prefix.
-    tail = right[matches[n].start():] if n < len(matches) else ""
-    joined = _clean(left + " " + tail)
-    return VerifiedSpeech(joined) if isinstance(left, VerifiedSpeech) or isinstance(right, VerifiedSpeech) else joined
-
-
-def _join_segments(ordered: Sequence[str | None]) -> str | None:
-    result = None
-    previous = None
-    verified = False
-    for text in ordered:
-        if text is not None:
-            verified = verified or isinstance(text, VerifiedSpeech)
-            if result is None:
-                result = text
-            elif previous is None:
-                # The intervening segment was acoustically silent: no overlap.
-                result = _clean(result + " " + text)
-            else:
-                # Match against the adjacent segment, not earlier repeated words.
-                joined = _join_overlap(previous, text)
-                result += joined[len(previous):]
-        previous = text
-    return VerifiedSpeech(result) if result is not None and verified else result
-
-
-def _reconcile_segments(
-    ordered: list[str | None], chunks: list[Path], config: ProviderConfig,
-    api_key: str, prompt: str, deadline: float,
-) -> str | None:
-    """Reread a conflicting adjacent pair from audio, never from proposed text.
-
-    At most four union-window requests per group, each <=120 s of audio and
-    inside the original request deadline. A merged reading must still agree
-    with its neighbours; otherwise fail explicitly without a partial result.
-    """
-    texts = list(ordered)
-    spans = list(chunks.spans) if isinstance(chunks, ContextSegments) else []
-    for attempt in range(5):
-        conflict = None
-        for index, (left, right) in enumerate(zip(texts, texts[1:])):
-            if left is None or right is None:
-                continue
-            try:
-                _join_overlap(left, right)
-            except ProviderError:
-                conflict = index
-                break
-        if conflict is None:
-            return _join_segments(texts)
-        if not isinstance(chunks, ContextSegments) or attempt == 4:
-            raise ProviderError("transcript_seam_unresolved: retry with original audio")
-        i = conflict
-        start, end = spans[i][0], spans[i+1][1]
-        if end - start > 120:
-            raise ProviderError("transcript_seam_unresolved: join window exceeds safe limit")
-        if deadline - time.monotonic() < 1:
-            raise ProviderError("transcription deadline exceeded")
-        window = chunks.audio.with_name(f"{chunks.audio.stem}-join{attempt}.mp3")
-        _render_span(chunks.audio, start, end, window)
-        remaining = deadline - time.monotonic()
-        if remaining < 1:
-            raise ProviderError("transcription deadline exceeded")
-        text = _transcribe_chunk(window, replace(config, timeout=min(remaining, SEGMENT_ATTEMPT_TIMEOUT)),
-                                 api_key, prompt)
-        texts[i:i+2] = [text]
-        spans[i:i+2] = [(start, end)]
-    raise AssertionError("unreachable")
+    command = [
+        "ffmpeg", "-nostdin", "-v", "error", "-xerror", "-y",
+        "-i", str(source), "-map", "0:a:0",
+        # Browser MediaRecorder WebM (Chromium on Linux/Omarchy) can carry
+        # non-monotonic timestamps; rebuild a continuous clock before muxing.
+        "-af", "aresample=async=1:first_pts=0,asetpts=N/SR/TB",
+        "-ac", "1", "-ar", "16000",
+        "-c:a", "libmp3lame", "-b:a", "64k",
+        "-f", "segment", *split_args,
+        "-reset_timestamps", "1", str(output_pattern),
+    ]
+    completed = runner(command, **_ffmpeg_kwargs())
+    chunks = sorted(directory.glob("voice-*.mp3"))
+    if completed.returncode != 0 or not chunks or any(item.stat().st_size == 0 for item in chunks):
+        for item in chunks:
+            item.unlink(missing_ok=True)
+        retry = runner(_tolerant_retry(command), **_ffmpeg_kwargs())
+        retried = sorted(directory.glob("voice-*.mp3"))
+        if retry.returncode == 0 and retried and all(item.stat().st_size > 0 for item in retried):
+            completed, chunks = retry, retried
+    if completed.returncode != 0 or not chunks or any(item.stat().st_size == 0 for item in chunks):
+        raise ProviderError(f"audio normalization failed: {_clean(completed.stderr)[:180]}")
+    # A recording a few ms longer than a segment boundary (e.g. 29.98 s with
+    # 30 s segments) leaves a trailing header-only stub that no decoder can
+    # open. It carries no audio; dropping it keeps the whole recording intact
+    # instead of failing every retry on "speech detection failed".
+    while len(chunks) > 1 and _is_empty_tail(chunks[-1]):
+        chunks.pop().unlink(missing_ok=True)
+    return chunks
 
 
 TAIL_STUB_SECONDS = 0.25
 SHORT_TAIL_SECONDS = 1.5
+
+# Pause-aligned cuts: each segment ends at the quietest 200 ms within the
+# last few seconds before its nominal length, so segments never grow past the
+# configured provider limit and the cut sits between words.
+CUT_SAMPLE_RATE = 16000
+CUT_FRAME_SAMPLES = 320  # 20 ms
+CUT_SMOOTH_FRAMES = 10  # 200 ms
+CUT_SEARCH_SECONDS = 8.0
+
+
+def _frame_energies(source: Path) -> "object | None":
+    """Mean-square energy per 20 ms frame of the normalized mono 16 kHz audio."""
+    import numpy as np
+
+    try:
+        process = subprocess.Popen(
+            ["ffmpeg", "-nostdin", "-v", "error", "-i", str(source), "-map", "0:a:0",
+             "-af", "aresample=async=1:first_pts=0,asetpts=N/SR/TB",
+             "-ac", "1", "-ar", str(CUT_SAMPLE_RATE), "-f", "s16le", "-"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+    block = CUT_FRAME_SAMPLES * 2 * 500  # 10 s per read
+    energies, carry = [], b""
+    try:
+        assert process.stdout is not None
+        while True:
+            data = process.stdout.read(block)
+            if not data:
+                break
+            data = carry + data
+            usable = len(data) - len(data) % (CUT_FRAME_SAMPLES * 2)
+            carry = data[usable:]
+            if usable:
+                samples = np.frombuffer(data[:usable], dtype="<i2").astype(np.float32)
+                energies.append((samples.reshape(-1, CUT_FRAME_SAMPLES) ** 2).mean(axis=1))
+        process.wait(timeout=300)
+    except Exception:  # noqa: BLE001 - analysis is an optimisation; fixed cuts remain the fallback
+        process.kill()
+        return None
+    if process.returncode != 0 or not energies:
+        return None
+    return np.concatenate(energies)
+
+
+def choose_pause_cuts(energies, chunk_seconds: float, *, frame_seconds: float = CUT_FRAME_SAMPLES / CUT_SAMPLE_RATE,
+                      search_seconds: float = CUT_SEARCH_SECONDS) -> list[float]:
+    """Cut times (s) placing every boundary in the quietest nearby moment.
+
+    Each segment is at most ``chunk_seconds`` long; the cut is the centre of
+    the lowest-energy 200 ms window in the final ``search_seconds`` before the
+    nominal boundary (latest wins on ties, keeping segments long).
+    """
+    import numpy as np
+
+    values = np.asarray(energies, dtype=np.float64)
+    total = len(values)
+    span = int(round(chunk_seconds / frame_seconds))
+    search = max(1, min(int(round(search_seconds / frame_seconds)), span // 2))
+    if total <= span:
+        return []
+    kernel = np.ones(CUT_SMOOTH_FRAMES) / CUT_SMOOTH_FRAMES
+    smooth = np.convolve(values, kernel, mode="same")
+    cuts: list[float] = []
+    start = 0
+    while total - start > span:
+        hi = start + span
+        lo = hi - search
+        window = smooth[lo:hi]
+        best = lo + int(len(window) - 1 - np.argmin(window[::-1]))
+        cuts.append(round(best * frame_seconds, 3))
+        start = best
+    return cuts
+
+
+def _pause_cut_times(source: Path, chunk_seconds: int) -> list[float] | None:
+    """Pause-aligned cut list, or None to fall back to fixed-length segments."""
+    energies = _frame_energies(source)
+    if energies is None:
+        return None
+    try:
+        return choose_pause_cuts(energies, float(chunk_seconds)) or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _is_empty_tail(chunk: Path) -> bool:
@@ -481,24 +450,47 @@ def _verbatim_recovery(audio: Path, config: ProviderConfig, api_key: str, durati
 
 
 def _request_text(audio: Path, config: ProviderConfig, api_key: str, prompt: str = "") -> str:
+    """One transcription request; a provider rate limit is waited out briefly."""
+    for attempt in range(RATE_LIMIT_RETRIES + 1):
+        try:
+            return _request_text_once(audio, config, api_key, prompt)
+        except _RateLimited as exc:
+            if attempt >= RATE_LIMIT_RETRIES or exc.wait > RATE_LIMIT_MAX_WAIT_SECONDS:
+                raise ProviderError(exc.message) from None
+            time.sleep(exc.wait + 0.5)
+    raise ProviderError(f"{config.name} rate limited")  # pragma: no cover - loop always returns or raises
+
+
+# Tinfoil answers bursts (parallel slices, several notes at once) with
+# "429 ... Retry after N seconds". That is transient: wait it out on the same
+# route rather than failing the whole note and leaving it to a manual Retry.
+RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_MAX_WAIT_SECONDS = 30.0
+_RETRY_AFTER_RE = re.compile(r"retry after (\d+(?:\.\d+)?) seconds?", re.IGNORECASE)
+
+
+class _RateLimited(Exception):
+    def __init__(self, message: str, wait: float) -> None:
+        super().__init__(message)
+        self.message = message
+        self.wait = wait
+
+
+def _request_text_once(audio: Path, config: ProviderConfig, api_key: str, prompt: str = "") -> str:
     """One transcription request; returns cleaned non-empty text or raises ProviderError."""
-    if config.name == "parakeet":
-        from parakeet_adapter import request_transcription
-        return request_transcription(audio, config)
     body, content_type = _multipart(config.model, audio, config.language, prompt)
     request = urllib.request.Request(
         config.endpoint,
         data=body,
         method="POST",
         headers={
-            **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": content_type,
             "Accept": "application/json",
         },
     )
     try:
-        with (_open_transcription(request, timeout=config.timeout) if is_local_transcriber(config)
-              else urllib.request.urlopen(request, timeout=config.timeout)) as response:
+        with urllib.request.urlopen(request, timeout=config.timeout) as response:
             payload = json.loads(response.read())
             status = response.status
     except urllib.error.HTTPError as exc:
@@ -512,6 +504,9 @@ def _request_text(audio: Path, config: ProviderConfig, api_key: str, prompt: str
         message = f"{config.name} returned HTTP {exc.code}"
         if detail:
             message += f": {detail[:300]}"
+        if exc.code == 429:
+            match = _RETRY_AFTER_RE.search(detail)
+            raise _RateLimited(message, float(match.group(1)) if match else 2.0) from exc
         raise ProviderError(message) from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise ProviderError(f"{config.name} route unavailable ({type(exc).__name__})") from exc
@@ -544,50 +539,147 @@ def _transcribe_chunk(audio: Path, config: ProviderConfig, api_key: str, prompt:
 
 
 def _split_segment(audio: Path) -> list[Path]:
-    return _segment_audio(audio, target_seconds=min(30, _audio_duration(audio) / 2))
-
-
-def _is_timeout(exc: BaseException) -> bool:
-    cause = exc.__cause__
-    return ("(TimeoutError)" in str(exc) or isinstance(exc, TimeoutError)
-            or isinstance(getattr(cause, "reason", None), TimeoutError))
+    duration = _audio_duration(audio)
+    half = duration / 2
+    parts = []
+    for index, (start, length) in enumerate(((0.0, half), (half, duration - half))):
+        out = audio.with_name(f"{audio.stem}-split{index}.mp3")
+        completed = subprocess.run(
+            ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-y", "-ss", f"{start:.3f}",
+             "-t", f"{length:.3f}", "-i", str(audio), "-c:a", "libmp3lame", "-b:a", "64k", str(out)],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+        if completed.returncode != 0 or not out.is_file() or out.stat().st_size == 0:
+            raise ProviderError("stalled segment could not be split")
+        parts.append(out)
+    return parts
 
 
 def _transcribe_segment(
     audio: Path, config: ProviderConfig, api_key: str, prompt: str = "", *, depth: int = 0,
-    deadline: float | None = None,
 ) -> str | None:
-    """Bounded whole/segment attempt, then at most two contextual split levels."""
-    if deadline is None:
-        deadline = time.monotonic() + config.timeout
-    remaining = deadline - time.monotonic()
-    if remaining < 1:
-        raise ProviderError("transcription deadline exceeded")
-    attempt = replace(config, timeout=min(remaining, SEGMENT_ATTEMPT_TIMEOUT))
+    """Transcribe one short segment; re-split it once or twice if the provider stalls."""
+    short = PROVIDER_CHUNK_SECONDS <= 120
+    attempt = replace(config, timeout=min(config.timeout, SEGMENT_ATTEMPT_TIMEOUT)) if short else config
     try:
         return _transcribe_chunk(audio, attempt, api_key, prompt)
     except ProviderError as exc:
-        if not (_is_timeout(exc) and depth < 2):
+        stalled = "(TimeoutError)" in str(exc)
+        if not (short and stalled and depth < 2):
             raise
         if _audio_duration(audio) < SEGMENT_SPLIT_MIN_SECONDS:
-            # A different neutral prompt is the only retry for very short audio.
-            remaining = deadline - time.monotonic()
-            if remaining < 1:
-                raise ProviderError("transcription deadline exceeded") from exc
+            # Too short to split. Voxtral's stalls are input-deterministic, so
+            # re-ask once with a different neutral context prompt on the same route.
             retry_prompt = _RECHECK_PROMPT if prompt != _RECHECK_PROMPT else ""
-            return _transcribe_chunk(audio, replace(attempt, timeout=min(attempt.timeout, remaining)),
-                                     api_key, retry_prompt)
+            return _transcribe_chunk(audio, attempt, api_key, retry_prompt)
     texts = []
-    parts = _split_segment(audio)
-    for part in parts:
+    for part in _split_segment(audio):
         try:
             if detect_no_speech(part):
-                texts.append(None)
                 continue
         except SpeechGateError as exc:
             raise ProviderError(str(exc)) from exc
-        texts.append(_transcribe_segment(part, config, api_key, prompt, depth=depth + 1, deadline=deadline))
-    return _reconcile_segments(texts, parts, config, api_key, prompt, deadline)
+        text = _transcribe_segment(part, config, api_key, prompt, depth=depth + 1)
+        if text:
+            texts.append(text)
+    if not texts:
+        return None
+    joined = " ".join(texts)
+    return VerifiedSpeech(joined) if any(isinstance(t, VerifiedSpeech) for t in texts) else joined
+
+
+class _RejectedChunk:
+    """A slice whose reading was rejected as an answer rather than speech."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+
+def _is_content_rejection(exc: Exception) -> bool:
+    message = str(exc)
+    return REFUSAL_CODE in message or "transcript expansion" in message
+
+
+# A rejected slice is re-read with this much neighbouring audio. Archimedes
+# Anywhere sent notes up to 90 s whole and fell back to the whole recording
+# when a piece failed; the windows below keep that context-first behaviour
+# while staying inside the verified recovery bound.
+CONTEXT_WINDOW_MAX_SECONDS = 120.0
+# The wider reading must keep most of the neighbour's words; a window that
+# silently drops content is not accepted as a replacement.
+CONTEXT_WINDOW_MIN_RETAINED = 0.75
+
+
+def _merge_chunks(parts: list[Path], out: Path) -> Path:
+    args = ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-y"]
+    for part in parts:
+        args += ["-i", str(part)]
+    args += ["-filter_complex", f"concat=n={len(parts)}:v=0:a=1",
+             "-c:a", "libmp3lame", "-b:a", "64k", str(out)]
+    completed = subprocess.run(args, capture_output=True, text=True, timeout=60, check=False)
+    if completed.returncode != 0 or not out.is_file() or out.stat().st_size == 0:
+        raise ProviderError("context window could not be assembled")
+    return out
+
+
+def _context_windows(index: int, count: int) -> list[tuple[int, int]]:
+    """Inclusive chunk ranges to try for a rejected chunk, narrowest first,
+    ending with the whole note (Archimedes Anywhere's fallback). Windows over
+    CONTEXT_WINDOW_MAX_SECONDS are skipped by the caller."""
+    candidates = []
+    if index > 0:
+        candidates.append((index - 1, index))
+    if index + 1 < count:
+        candidates.append((index, index + 1))
+    if 0 < index < count - 1:
+        candidates.append((index - 1, index + 1))
+    if index > 1:
+        candidates.append((index - 2, index))
+    candidates.append((0, count - 1))
+    windows = []
+    for window in candidates:
+        if window not in windows and window[0] != window[1]:
+            windows.append(window)
+    return windows
+
+
+def _recover_rejected_chunks(ordered: list, chunks: list[Path], config: ProviderConfig, api_key: str,
+                             prompt: str, directory: Path) -> list:
+    """Re-read each rejected slice together with its neighbour on the same
+    attested model, so a trailing question is heard as part of the dictation
+    instead of being answered. Fails closed with the original error when no
+    context window yields a plausible transcript."""
+    if not any(isinstance(item, _RejectedChunk) for item in ordered):
+        return ordered
+    ordered = list(ordered)
+    count = len(ordered)
+    for index in range(count):
+        item = ordered[index]
+        if not isinstance(item, _RejectedChunk):
+            continue
+        recovered = False
+        for first, last in _context_windows(index, count):
+            if sum(_audio_duration(chunks[i]) for i in range(first, last + 1)) > CONTEXT_WINDOW_MAX_SECONDS:
+                continue
+            others = [ordered[i] for i in range(first, last + 1) if i != index]
+            # Words from neighbours that were read cleanly; the wider window must keep most of them.
+            baseline = sum(len(text.split()) for text in others if isinstance(text, str))
+            try:
+                merged = _merge_chunks(list(chunks[first:last + 1]),
+                                       directory / f"context-{first:03d}-{last:03d}.mp3")
+                text = _transcribe_segment(merged, config, api_key, prompt)
+            except Exception:  # noqa: BLE001 - a failed re-read keeps the original failure contract
+                continue
+            if not text or len(text.split()) < baseline * CONTEXT_WINDOW_MIN_RETAINED:
+                continue
+            for i in range(first, last + 1):
+                ordered[i] = None
+            ordered[first] = text
+            recovered = True
+            break
+        if not recovered:
+            raise ProviderError(f"{config.name} chunk {index + 1}/{count} failed: {item.reason}")
+    return ordered
 
 
 def transcribe(source: Path, config: ProviderConfig, *, api_key: str, prompt: str = "") -> TranscriptionResult:
@@ -596,17 +688,16 @@ def transcribe(source: Path, config: ProviderConfig, *, api_key: str, prompt: st
             raise ProviderError("Tinfoil attestation route must be loopback-only")
         if config.model != "voxtral-small-24b":
             raise ProviderError("Tinfoil transcription model is not approved")
-    elif config.name not in {"openai-compatible", "parakeet"}:
+    elif config.name != "openai-compatible":
         raise ProviderError(f"unsupported provider: {config.name}")
-    if not api_key and config.name != "parakeet" and not is_local_transcriber(config):
+    if not api_key:
         raise ProviderError("provider credential is unavailable")
 
     started = time.perf_counter()
-    deadline = time.monotonic() + config.timeout
     with tempfile.TemporaryDirectory(prefix="wizard-stt-") as directory:
         chunks = normalize_audio_chunks(source, Path(directory))
 
-        def _chunk_text(index: int, chunk: Path) -> str | None:
+        def _chunk_text(index: int, chunk: Path) -> "str | _RejectedChunk | None":
             try:
                 try:
                     no_speech = detect_no_speech(chunk)
@@ -615,7 +706,7 @@ def transcribe(source: Path, config: ProviderConfig, *, api_key: str, prompt: st
                 if no_speech:
                     return None
                 try:
-                    return _transcribe_segment(chunk, config, api_key, prompt, deadline=deadline)
+                    return _transcribe_segment(chunk, config, api_key, prompt)
                 except ProviderError as exc:
                     # The final slice past a segment boundary is often well
                     # under a second of room noise. An explicitly empty reading
@@ -623,6 +714,12 @@ def transcribe(source: Path, config: ProviderConfig, *, api_key: str, prompt: st
                     if (index == len(chunks) > 1 and str(exc) == f"{config.name} returned no transcript"
                             and _audio_duration(chunk) < SHORT_TAIL_SECONDS):
                         return None
+                    # A short slice that ends in a spoken question can make
+                    # Voxtral answer it. That is deterministic for the slice,
+                    # so retrying the same slice never helps; it is re-read
+                    # below together with its neighbour for context.
+                    if len(chunks) > 1 and _is_content_rejection(exc):
+                        return _RejectedChunk(str(exc))
                     raise
             except ProviderError as exc:
                 if len(chunks) > 1:
@@ -650,21 +747,21 @@ def transcribe(source: Path, config: ProviderConfig, *, api_key: str, prompt: st
                     for future in futures:
                         future.cancel()
                     raise
+        ordered = _recover_rejected_chunks(ordered, chunks, config, api_key, prompt, Path(directory))
         transcripts = [text for text in ordered if text is not None]
-        joined = _reconcile_segments(ordered, chunks, config, api_key, prompt, deadline)
 
     if not transcripts:
         raise NoSpeechError("No speech detected")
-    text = _clean(joined)
+    text = _clean(" ".join(transcripts))
     text = postprocess_transcript(text, config.postprocess)
     # Every chunk already passed the per-chunk gate; re-checking the joined
     # text would re-reject a chunk that was independently verified as speech.
-    verified = isinstance(joined, VerifiedSpeech)
+    verified = any(isinstance(chunk_text, VerifiedSpeech) for chunk_text in transcripts)
     if not verified and is_assistant_refusal(text):
         raise ProviderError(f"{config.name} returned {REFUSAL_CODE}")
     return TranscriptionResult(
         text=text,
-        provider="tinfoil-attested" if config.attested else config.name,
+        provider="tinfoil-attested" if config.attested else "openai-compatible",
         model=config.model,
         latency_ms=round((time.perf_counter() - started) * 1000, 1),
     )
@@ -679,9 +776,18 @@ def route_transcription(source: Path, language: str = "", prompt: str = "", *, m
     except ProviderConfigurationError as exc:
         raise ProviderError(str(exc)) from exc
     if language:
-        selected = replace(selected, language=language[:12])
+        selected = ProviderConfig(
+            name=selected.name,
+            model=selected.model,
+            endpoint=selected.endpoint,
+            api_key_env=selected.api_key_env,
+            attested=selected.attested,
+            language=language[:12],
+            timeout=selected.timeout,
+            postprocess=selected.postprocess,
+        )
     selected = replace(selected, postprocess=dict(selected.postprocess, mode=mode))
-    key = "" if selected.name == "parakeet" or is_local_transcriber(selected) else load_api_key(selected.api_key_env)
+    key = load_api_key(selected.api_key_env)
     # Context is optional and request-scoped: it is never written to disk, logs, or receipts.
     # Limit it before multipart assembly so callers cannot turn this into a large prompt lane.
     prompt = _clean(prompt)[:1200]
