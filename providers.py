@@ -71,6 +71,35 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise ProviderError("transcription redirect refused; no fallback")
 
 
+# The App Manager's grant key for the local engine (wizard-os spec PERMISSIONS.md layer 2; issue 386 card 5). With the
+# browser boundary on, the Transcriber front serves its engine API only to callers that send a granted key. The key
+# comes from this app's own grants file (WIZARD_GRANTS_FILE, mounted read-only at /wizard by the App Manager):
+# `outgoing` keyed by the grant's target, from `uses: [transcriber]` in wizard.md. It is sent only on the packaged
+# local-engine route (is_local_transcriber), never to a cloud provider, and never with a bearer token.
+ENGINE_GRANT_TARGETS = ("transcriber", "slot:speech-to-text-engine", "slot:transcription")
+_GRANT_KEY_RE = re.compile(r"[A-Za-z0-9_-]{32,256}")
+
+
+def engine_grant_key(path: str | None = None) -> str:
+    """This app's key for the local speech engine, or '' (no grants file, no grant, malformed file)."""
+    path = os.environ.get("WIZARD_GRANTS_FILE", "") if path is None else path
+    if not path:
+        return ""
+    try:
+        with open(path, "rb") as f:
+            doc = json.loads(f.read(65537)[:65536])
+    except (OSError, ValueError):
+        return ""
+    out = doc.get("outgoing") if isinstance(doc, dict) else None
+    if not isinstance(out, dict):
+        return ""
+    for target in ENGINE_GRANT_TARGETS:
+        key = out.get(target)
+        if isinstance(key, str) and _GRANT_KEY_RE.fullmatch(key):
+            return key
+    return ""
+
+
 def _open_transcription(request, *, timeout):
     # No proxy/redirect can move local audio or bearer credentials off the selected route.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
@@ -486,12 +515,14 @@ def _request_text(audio: Path, config: ProviderConfig, api_key: str, prompt: str
         from parakeet_adapter import request_transcription
         return request_transcription(audio, config)
     body, content_type = _multipart(config.model, audio, config.language, prompt)
+    grant = engine_grant_key() if is_local_transcriber(config) else ""
     request = urllib.request.Request(
         config.endpoint,
         data=body,
         method="POST",
         headers={
             **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
+            **({"X-Wizard-Grant": grant} if grant else {}),
             "Content-Type": content_type,
             "Accept": "application/json",
         },

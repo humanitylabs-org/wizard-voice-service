@@ -20,7 +20,7 @@ mcp:
 skill: SKILL.md
 provides: [voice]
 needs: [speech-to-text-engine]
-uses: [files]
+uses: [files, transcriber]
 health: /health
 ---
 
