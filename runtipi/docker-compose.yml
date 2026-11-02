@@ -21,6 +21,9 @@ services:
       WIZARD_VOICE_ENV: /dev/null
       WIZARD_VOICE_ALLOWED_HOSTS: "127.0.0.1,localhost,wizard-voice-service"
       WIZARD_VOICE_RETAIN_FAILED_AUDIO: "0"
+      # Box-peer gate on /mcp (voice_mcp/front.py), off unless App Manager turns the browser boundary on.
+      WIZARD_BROWSER_BOUNDARY: ${WIZARD_BROWSER_BOUNDARY:-0}
+      WIZARD_GATEWAY_KEY: ${WIZARD_GATEWAY_KEY:-}
     volumes:
       - ${APP_DATA_DIR}/data:/data
       - ${ROOT_FOLDER_HOST}/media:/media:ro
