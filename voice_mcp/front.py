@@ -3,6 +3,7 @@
 Same initialize/tools/list/tools/call pattern as Transcriber, without another
 proxy process. No SSE/session state is necessary for these request/response tools.
 """
+import hashlib
 import hmac
 import json
 import os
@@ -14,6 +15,53 @@ from voice_mcp.tools import TOOLS
 
 router = APIRouter()
 MAX_BODY = 1 << 20
+
+# Box-peer gate (wizard-os issue 386, card 5), default-off: only with WIZARD_BROWSER_BOUNDARY=1, which App Manager
+# writes into this app's user env together with WIZARD_GATEWAY_KEY, a per-installation key it also gives the Agent
+# Service gateway (grants/agent-service.json; the gateway sends it as X-Wizard-Grant). Then /mcp answers only that
+# gateway: no browser or network-identity markers (Voice has no view and no Serve route), and the key, or a key whose
+# SHA-256 is a host:agent-service row of WIZARD_GRANTS_FILE, or the operator's WIZARD_VOICE_MCP_TOKEN. Nothing
+# configured = refused (fail closed). Off, /mcp behaves exactly as before.
+BROWSER_MARKERS = ("origin", "cookie", "referer", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user")
+NETWORK_MARKERS = ("tailscale-user-login", "tailscale-user-name", "tailscale-user-profile-pic", "tailscale-app-capabilities",
+                   "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "forwarded", "x-real-ip")
+
+
+def _gateway_rows():
+    path = os.environ.get("WIZARD_GRANTS_FILE", "")
+    if not path:
+        return []
+    try:
+        with open(path, "rb") as f:
+            doc = json.loads(f.read(65537)[:65536])
+        rows = doc.get("incoming") if isinstance(doc, dict) else None
+        return [str(r.get("sha256", "")) for r in rows or [] if isinstance(r, dict) and r.get("from") == "host:agent-service"]
+    except (OSError, ValueError):
+        return []
+
+
+def gateway_refusal(request: Request):
+    """None to serve /mcp, else (status, message). Only with the boundary on."""
+    if os.environ.get("WIZARD_BROWSER_BOUNDARY") != "1":
+        return None
+    headers = request.headers
+    marked = [h for h in BROWSER_MARKERS + NETWORK_MARKERS if h in headers]
+    if marked:
+        return 403, "box-only MCP: refused a request carrying " + marked[0]
+    token = os.environ.get("WIZARD_VOICE_MCP_TOKEN", "")
+    if token and hmac.compare_digest(headers.get("authorization", "").encode(), ("Bearer " + token).encode()):
+        return None
+    key = os.environ.get("WIZARD_GATEWAY_KEY", "").strip()
+    rows = _gateway_rows()
+    if not key and not rows:
+        return 503, "MCP gateway key not configured"
+    supplied = headers.get("x-wizard-grant", "")
+    if supplied and key and hmac.compare_digest(supplied.encode(), key.encode()):
+        return None
+    digest = hashlib.sha256(supplied.encode()).hexdigest()
+    if supplied and any(hmac.compare_digest(r.encode(), digest.encode()) for r in rows):
+        return None
+    return 403, "MCP answers only the Wizard agent gateway"
 
 
 def error(i, code, message):
@@ -55,12 +103,15 @@ def rpc(msg):
 
 @router.api_route("/mcp", methods=["POST", "GET", "DELETE"])
 async def mcp(request: Request):
+    refused = gateway_refusal(request)
+    if refused:
+        return JSONResponse({"error": refused[1]}, status_code=refused[0])
     origin = request.headers.get("origin")
     allowed_origins = {x.strip() for x in os.environ.get("WIZARD_VOICE_MCP_ORIGINS", "").split(",") if x.strip()}
     if origin and origin not in allowed_origins:
         return JSONResponse({"error": "MCP origin not allowed"}, status_code=403)
     token = os.environ.get("WIZARD_VOICE_MCP_TOKEN", "")
-    if token and not hmac.compare_digest(request.headers.get("authorization", "").encode(), ("Bearer " + token).encode()):
+    if token and os.environ.get("WIZARD_BROWSER_BOUNDARY") != "1" and not hmac.compare_digest(request.headers.get("authorization", "").encode(), ("Bearer " + token).encode()):
         return JSONResponse({"error": "MCP bearer token required"}, status_code=401)
     if request.method != "POST":
         return Response(status_code=405, headers={"Allow": "POST"})
