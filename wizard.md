@@ -5,7 +5,7 @@ name: Voice
 type: service
 category: system
 tags: [audio, dictation]
-version: 0.2.2-rc1.app1
+version: 0.2.2-rc1.app2
 license: MIT
 summary: Dictation modes, local corrections and durable voice jobs over the installed speech engine.
 source: https://github.com/humanitylabs-org/wizard-voice-service
@@ -22,6 +22,9 @@ provides: [voice]
 needs: [speech-to-text-engine]
 uses: [files]
 health: /health
+switches:
+  contract: wizard.app-switches/1
+  path: /api/switches
 ---
 
 # Voice

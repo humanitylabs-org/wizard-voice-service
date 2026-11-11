@@ -45,6 +45,7 @@ py-modules = [
   "voice_cli",
   "profile_cli",
   "parakeet_adapter",
+  "wizard_switches",
 ]
 
 [tool.setuptools.data-files]
