@@ -30,6 +30,8 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Wizard Voice Service", version="0.2.2rc1", docs_url=None, redoc_url=None, lifespan=lifespan)
 from voice_mcp.front import router as mcp_router
 app.include_router(mcp_router)
+from wizard_switches import install_switches  # wizard.app-switches/1 (Tracker Try it)
+install_switches(app, os.environ.get("WIZARD_VOICE_DATA_DIR", "/data"))
 app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=[
