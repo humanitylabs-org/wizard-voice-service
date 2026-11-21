@@ -152,6 +152,9 @@ def test_manifest_and_compose_packaging():
     manifest = yaml.safe_load((ROOT / "wizard.md").read_text().split("---")[1])
     assert manifest["provides"] == ["voice"]
     assert manifest["needs"] == ["speech-to-text-engine"]
+    # wizard-voice-service#13: without `uses: transcriber` the App Manager gives Voice no network to
+    # the engine, so `transcriber` does not resolve and every transcription fails.
+    assert "transcriber" in manifest["uses"] and "files" in manifest["uses"]
     assert "view" not in manifest
     cfg = json.loads((ROOT / "runtipi/config.json").read_text())
     assert cfg["no_gui"] and not cfg["exposable"]

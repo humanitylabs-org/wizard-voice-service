@@ -6,6 +6,7 @@ proxy process. No SSE/session state is necessary for these request/response tool
 import hmac
 import json
 import os
+import re
 
 from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
@@ -14,6 +15,47 @@ from voice_mcp.tools import TOOLS
 
 router = APIRouter()
 MAX_BODY = 1 << 20
+
+# Plain-words causes for the agent. Each is matched against the service's own
+# error text (never echoed raw: it can carry provider responses or temp paths).
+_CAUSES = (
+    ("audio normalization failed", "The audio file could not be decoded: it is not a supported audio type, has no audio track, or is damaged."),
+    ("audio speech detection failed", "The audio file could not be decoded: it is not a supported audio type, has no audio track, or is damaged."),
+    ("speech detector", "The local speech detector is unavailable on this Wizard; check voice_status."),
+    ("route unavailable", "The transcription engine could not be reached. Check that the Transcriber app is installed and running."),
+    ("redirect refused", "The transcription engine could not be reached (it answered with a redirect)."),
+    ("credential", "The selected transcription engine has no credential; check voice_status."),
+    ("deadline exceeded", "Transcription took too long and was stopped; try a shorter recording."),
+    ("returned no transcript", "The transcription engine returned no text for this recording."),
+    ("invalid transcription response", "The transcription engine returned an answer Voice could not read."),
+    ("transcript_seam_unresolved", "The recording could not be joined back together after splitting it; try again or use a shorter recording."),
+    ("refusal", "The transcription engine answered instead of transcribing; try again."),
+)
+
+
+def explain(exc):
+    """One plain sentence naming the real cause of a failed tool call."""
+    status = getattr(exc, "status_code", None)
+    detail = str(getattr(exc, "detail", "") or exc)
+    if isinstance(exc, PermissionError):
+        return "Voice cannot read that file (permission denied)."
+    if isinstance(exc, ValueError):
+        return detail[:200]  # tools.py raises ValueError only with its own fixed text
+    if status == 422 or "no speech" in detail.lower():
+        return "No speech was detected in the recording."
+    if status == 413:
+        return "The recording is larger than the upload limit."
+    if status == 400 and "empty" in detail:
+        return "The recording is empty."
+    m = re.search(r"returned HTTP (\d{3})", detail)
+    if m:
+        return "The transcription engine returned an error (HTTP " + m.group(1) + "). Check that the Transcriber app is running."
+    for needle, message in _CAUSES:
+        if needle in detail:
+            return message
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return "The transcription engine could not be reached. Check that the Transcriber app is installed and running."
+    return "Voice tool failed (" + type(exc).__name__ + (" " + str(status) if status else "") + "); check voice_status and the file/mode."
 
 
 def error(i, code, message):
@@ -46,8 +88,9 @@ def rpc(msg):
         try:
             result = {"content": [{"type": "text", "text": json.dumps(fn(**args))}], "isError": False}
         except Exception as exc:
-            # Do not echo transcript, filesystem paths, provider response or secrets.
-            result = {"content": [{"type": "text", "text": "Voice tool failed (" + type(exc).__name__ + "); check voice_status and the file/mode."}], "isError": True}
+            # Name the real cause in plain words; never echo transcript,
+            # filesystem paths, provider response or secrets.
+            result = {"content": [{"type": "text", "text": json.dumps({"error": explain(exc)})}], "isError": True}
     else:
         return error(i, -32601, "method not found")
     return {"jsonrpc": "2.0", "id": i, "result": result}
