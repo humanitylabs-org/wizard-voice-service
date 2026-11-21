@@ -31,8 +31,8 @@ jobs:
         env:
           # Write-once public voice fixture; PR jobs never build on the worker.
           IMAGE: ghcr.io/humanitylabs-org/wizard-voice-service
-          IMAGE_SHA: ${{ inputs.image_sha || 'a16698e0ac4654e8a5b2cab5af182d34c772b254' }}
-          DIGEST: ${{ inputs.digest || 'sha256:11919223c206164ad96d3f7802352ebb2c6fb72d47949eeb0eae8a00ba9e6075' }}
+          IMAGE_SHA: ${{ inputs.image_sha || 'bd2f2c914b0b29a1410338a6b7cfe0fbf84bf50b' }}
+          DIGEST: ${{ inputs.digest || 'sha256:91cb4785443fe5da124cdb749a2d712d0f9caff882b5e157af90467b9f444d80' }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
           python3 scripts/ci/ghcr_image.py verify

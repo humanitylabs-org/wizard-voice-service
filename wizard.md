@@ -5,7 +5,7 @@ name: Voice
 type: service
 category: system
 tags: [audio, dictation]
-version: 0.2.2-rc1.app2
+version: 0.2.2-rc1.app3
 license: MIT
 summary: Dictation modes, local corrections and durable voice jobs over the installed speech engine.
 source: https://github.com/humanitylabs-org/wizard-voice-service
