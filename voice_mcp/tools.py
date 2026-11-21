@@ -14,8 +14,10 @@ def transcribe(path, mode="dictation", language="en"):
         raise ValueError("invalid mode or language")
     root = Path(os.environ.get("WIZARD_VOICE_MEDIA_DIR", "/media")).resolve()
     full = (root / path).resolve()
-    if not full.is_relative_to(root) or not full.is_file():
+    if not full.is_relative_to(root):
         raise ValueError("file must be inside the owner's Files root")
+    if not full.is_file():
+        raise ValueError("no file at that path in the owner's Files (paths are relative to Files, e.g. Inbox/<day>/<name>.webm)")
     if full.stat().st_size > MAX_AUDIO_BYTES:
         raise ValueError("audio is larger than the upload limit")
     with full.open("rb") as source:

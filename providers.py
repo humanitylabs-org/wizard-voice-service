@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 from concurrent.futures import ThreadPoolExecutor
 import os
@@ -513,7 +514,9 @@ def _request_text(audio: Path, config: ProviderConfig, api_key: str, prompt: str
         if detail:
             message += f": {detail[:300]}"
         raise ProviderError(message) from exc
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, http.client.HTTPException, OSError) as exc:
+        # A dropped connection (RemoteDisconnected, ConnectionResetError) is
+        # an unreachable engine too, not an unexplained tool crash.
         raise ProviderError(f"{config.name} route unavailable ({type(exc).__name__})") from exc
 
     if status != 200 or not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
