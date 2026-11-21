@@ -2,8 +2,12 @@
 
 ## Layering and default-slot decision
 
-Voice provides **voice**, needs **speech-to-text-engine**, and optionally uses
-Files for MCP paths. Transcriber continues to own `transcription` and
+Voice provides **voice**, needs **speech-to-text-engine**, and uses Files for
+MCP paths and **transcriber** for the engine (`uses: [files, transcriber]`).
+With app isolation on, `uses: transcriber` is what gives Voice its
+`wizard-link-wizard-voice-service--transcriber` network, where the engine
+answers as `transcriber`; without it the name does not resolve and every
+transcription fails (wizard-voice-service#13). Transcriber continues to own `transcription` and
 `speech-to-text-engine`. Claiming `transcription` here would make an engine slot
 resolve back to the dictation layer, risking cycles or replacing timestamp APIs
 with a plain-text dictation API. No App Manager defaults are changed. A later

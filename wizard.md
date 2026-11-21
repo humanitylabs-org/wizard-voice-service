@@ -20,7 +20,7 @@ mcp:
 skill: SKILL.md
 provides: [voice]
 needs: [speech-to-text-engine]
-uses: [files]
+uses: [files, transcriber]   # transcriber: the engine at http://transcriber:8000 (its own link network)
 health: /health
 switches:
   contract: wizard.app-switches/1
