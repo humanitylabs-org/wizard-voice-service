@@ -1,21 +1,21 @@
 {
   "image": "ghcr.io/humanitylabs-org/wizard-voice-service",
-  "sha": "a16698e0ac4654e8a5b2cab5af182d34c772b254",
-  "index": "sha256:11919223c206164ad96d3f7802352ebb2c6fb72d47949eeb0eae8a00ba9e6075",
+  "sha": "bd2f2c914b0b29a1410338a6b7cfe0fbf84bf50b",
+  "index": "sha256:91cb4785443fe5da124cdb749a2d712d0f9caff882b5e157af90467b9f444d80",
   "anonymous": true,
   "platforms": {
     "amd64": {
-      "manifest": "sha256:755465f874ab80802f72cfc1ebb2127a5223e0acbe10cdfd21c681515183f0be",
-      "config": "sha256:c5086e335354852861192d1d579e94ca5219d55da2540e5f700d63be119cbb99"
+      "manifest": "sha256:c08b81a23852099107b9b0285c8571096082e73877033b1537122c64808f192a",
+      "config": "sha256:af670eee220c93a51015759b7f0d6d9de1a0182e439d44ef031044357af9e1d1"
     },
     "arm64": {
-      "manifest": "sha256:9e39d95ad512d14da8e13d95201451a29e129e2bc24af973d48aa47e7c6b332b",
-      "config": "sha256:59eb8c21ed8d346b0893a2fc23358dfe55588bd58a606dc297dfa04294363842"
+      "manifest": "sha256:5c42988eb240b70861958cee2d88115cf107d8cbcd084bcf14bc41dbee20dd5f",
+      "config": "sha256:7cd4854adb62f280630c27667d0262422acd4ad16550da1be76851a3ba62bfaf"
     }
   },
-  "publication_run": "https://github.com/humanitylabs-org/wizard-voice-service/actions/runs/42943540119",
-  "publish_job": "https://github.com/humanitylabs-org/wizard-voice-service/actions/runs/42943540119/job/130270819049",
-  "anonymous_job": "https://github.com/humanitylabs-org/wizard-voice-service/actions/runs/42943540119/job/130272775698",
+  "publication_run": "https://github.com/humanitylabs-org/wizard-voice-service/actions/runs/44932447470",
+  "publish_job": "https://github.com/humanitylabs-org/wizard-voice-service/actions/runs/44932447470/job/136931871461",
+  "anonymous_job": "https://github.com/humanitylabs-org/wizard-voice-service/actions/runs/44932447470/job/136933214440",
   "runner": "thales-wizard-voice-service",
   "visibility": "public"
 }

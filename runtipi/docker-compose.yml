@@ -1,11 +1,11 @@
-# Multi-arch image built from main 510bc89f507f02fd3fd41b64605918b2a1825a82.
+# Multi-arch image built from main bd2f2c914b0b29a1410338a6b7cfe0fbf84bf50b.
 # Anonymous digest + full-SHA tag pulls verified for both architectures.
 x-runtipi:
   schema_version: 2
   overrides: []
 services:
   wizard-voice-service:
-    image: ghcr.io/humanitylabs-org/wizard-voice-service@sha256:11919223c206164ad96d3f7802352ebb2c6fb72d47949eeb0eae8a00ba9e6075
+    image: ghcr.io/humanitylabs-org/wizard-voice-service@sha256:91cb4785443fe5da124cdb749a2d712d0f9caff882b5e157af90467b9f444d80
     user: "1000:1000"
     read_only: true
     cap_drop: [ALL]
